@@ -321,7 +321,7 @@ func startContainer(context *cli.Context, spec *specs.Spec, action CtAct, criuOp
 }
 ```
 
-- [createContainer](https://github.com/opencontainers/runc/blob/master/utils_linux.go)
+- startContainer -> [createContainer](https://github.com/opencontainers/runc/blob/master/utils_linux.go)
 ```diff
 func createContainer(context *cli.Context, id string, spec *specs.Spec) (libcontainer.Container, error) {
 	rootlessCg, err := shouldUseRootlessCgroupManager(context)
@@ -349,7 +349,7 @@ func createContainer(context *cli.Context, id string, spec *specs.Spec) (libcont
 }
 ```
 
-- loadFactory. 创建平台相关的factory，如linux factory
+- startContainer -> createContainer -> loadFactory. 创建平台相关的factory，如linux factory
 ```
 func loadFactory(context *cli.Context) (libcontainer.Factory, error) {
 	root := context.GlobalString("root")
@@ -462,7 +462,7 @@ type LinuxFactory struct {
 }
 
 ```
-- loadFactory -> New -> Factory.Create. 生成linuxContainer结构
+- startContainer -> createContainer -> loadFactory -> New -> Factory.Create. 生成linuxContainer结构
 ```diff
 func (l *LinuxFactory) Create(id string, config *configs.Config) (Container, error) {
 	if l.Root == "" {
@@ -509,7 +509,7 @@ func (l *LinuxFactory) Create(id string, config *configs.Config) (Container, err
 ```
 
 - startContainer -> runner.run(spec)
-```
+```diff
 type runner struct {
 	init            bool
 	enableSubreaper bool
@@ -536,7 +536,7 @@ func (r *runner) run(config *specs.Process) (int, error) {
 	if err = r.checkTerminal(config); err != nil {
 		return -1, err
 	}
-	process, err := newProcess(*config, r.init, r.logLevel)
++	process, err := newProcess(*config, r.init, r.logLevel)
 	if err != nil {
 		return -1, err
 	}
@@ -573,7 +573,7 @@ func (r *runner) run(config *specs.Process) (int, error) {
 
 	switch r.action {
 	case CT_ACT_CREATE:
-		err = r.container.Start(process)
++		err = r.container.Start(process)
 	case CT_ACT_RESTORE:
 		err = r.container.Restore(process, r.criuOpts)
 	case CT_ACT_RUN:
@@ -653,5 +653,28 @@ func newProcess(p specs.Process, init bool, logLevel string) (*libcontainer.Proc
 		lp.Rlimits = append(lp.Rlimits, rl)
 	}
 	return lp, nil
+}
+```
+
+- startContainer -> runner.run(spec) ->  r.container.Start
+```
+func (c *linuxContainer) Start(process *Process) error {
+	c.m.Lock()
+	defer c.m.Unlock()
+	if c.config.Cgroups.Resources.SkipDevices {
+		return &ConfigError{"can't start container with SkipDevices set"}
+	}
+	if process.Init {
+		if err := c.createExecFifo(); err != nil {
+			return err
+		}
+	}
+	if err := c.start(process); err != nil {
+		if process.Init {
+			c.deleteExecFifo()
+		}
+		return err
+	}
+	return nil
 }
 ```
