@@ -462,7 +462,7 @@ type LinuxFactory struct {
 }
 
 ```
-- Factory.Create. 生成linuxContainer结构
+- loadFactory -> New -> Factory.Create. 生成linuxContainer结构
 ```diff
 func (l *LinuxFactory) Create(id string, config *configs.Config) (Container, error) {
 	if l.Root == "" {
