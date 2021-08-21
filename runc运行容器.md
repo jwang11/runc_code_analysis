@@ -657,13 +657,14 @@ func newProcess(p specs.Process, init bool, logLevel string) (*libcontainer.Proc
 ```
 
 - startContainer -> runner.run(spec) ->  r.container.Start
-```
+```diff
 func (c *linuxContainer) Start(process *Process) error {
 	c.m.Lock()
 	defer c.m.Unlock()
 	if c.config.Cgroups.Resources.SkipDevices {
 		return &ConfigError{"can't start container with SkipDevices set"}
 	}
++	// 如果是第一次create，创建execFifo	
 	if process.Init {
 		if err := c.createExecFifo(); err != nil {
 			return err
