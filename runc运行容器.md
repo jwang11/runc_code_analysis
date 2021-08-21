@@ -679,3 +679,358 @@ func (c *linuxContainer) Start(process *Process) error {
 	return nil
 }
 ```
+
+- startContainer -> runner.run(spec) ->  r.container.Start -> c.start
+```diff
+func (c *linuxContainer) start(process *Process) (retErr error) {
++	parent, err := c.newParentProcess(process)
+	if err != nil {
+		return fmt.Errorf("unable to create new parent process: %w", err)
+	}
+
+	logsDone := parent.forwardChildLogs()
+	if logsDone != nil {
+		defer func() {
+			// Wait for log forwarder to finish. This depends on
+			// runc init closing the _LIBCONTAINER_LOGPIPE log fd.
+			err := <-logsDone
+			if err != nil && retErr == nil {
+				retErr = fmt.Errorf("unable to forward init logs: %w", err)
+			}
+		}()
+	}
+
++	if err := parent.start(); err != nil {
+		return fmt.Errorf("unable to start container process: %w", err)
+	}
+
+	if process.Init {
+		c.fifo.Close()
+		if c.config.Hooks != nil {
+			s, err := c.currentOCIState()
+			if err != nil {
+				return err
+			}
+
+			if err := c.config.Hooks[configs.Poststart].RunHooks(s); err != nil {
+				if err := ignoreTerminateErrors(parent.terminate()); err != nil {
+					logrus.Warn(fmt.Errorf("error running poststart hook: %w", err))
+				}
+				return err
+			}
+		}
+	}
+	return nil
+}
+```
+
+- startContainer -> runner.run(spec) ->  r.container.Start -> c.start -> c.newParentProcess
+创建sockPair用于parent和child通信
+```
+func (c *linuxContainer) newParentProcess(p *Process) (parentProcess, error) {
+	parentInitPipe, childInitPipe, err := utils.NewSockPair("init")
+	if err != nil {
+		return nil, fmt.Errorf("unable to create init pipe: %w", err)
+	}
+	messageSockPair := filePair{parentInitPipe, childInitPipe}
+
+	parentLogPipe, childLogPipe, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("unable to create log pipe: %w", err)
+	}
+	logFilePair := filePair{parentLogPipe, childLogPipe}
+
+	cmd := c.commandTemplate(p, childInitPipe, childLogPipe)
+	if !p.Init {
+		return c.newSetnsProcess(p, cmd, messageSockPair, logFilePair)
+	}
+
+	// We only set up fifoFd if we're not doing a `runc exec`. The historic
+	// reason for this is that previously we would pass a dirfd that allowed
+	// for container rootfs escape (and not doing it in `runc exec` avoided
+	// that problem), but we no longer do that. However, there's no need to do
+	// this for `runc exec` so we just keep it this way to be safe.
+	if err := c.includeExecFifo(cmd); err != nil {
+		return nil, fmt.Errorf("unable to setup exec fifo: %w", err)
+	}
+	return c.newInitProcess(p, cmd, messageSockPair, logFilePair)
+}
+```
+- startContainer -> runner.run(spec) ->  r.container.Start -> c.start -> c.newParentProcess -> c.newInitProcess
+```
+func (c *linuxContainer) newInitProcess(p *Process, cmd *exec.Cmd, messageSockPair, logFilePair filePair) (*initProcess, error) {
+	cmd.Env = append(cmd.Env, "_LIBCONTAINER_INITTYPE="+string(initStandard))
+	nsMaps := make(map[configs.NamespaceType]string)
+	for _, ns := range c.config.Namespaces {
+		if ns.Path != "" {
+			nsMaps[ns.Type] = ns.Path
+		}
+	}
+	_, sharePidns := nsMaps[configs.NEWPID]
+	data, err := c.bootstrapData(c.config.Namespaces.CloneFlags(), nsMaps)
+	if err != nil {
+		return nil, err
+	}
+	init := &initProcess{
+		cmd:             cmd,
+		messageSockPair: messageSockPair,
+		logFilePair:     logFilePair,
+		manager:         c.cgroupManager,
+		intelRdtManager: c.intelRdtManager,
+		config:          c.newInitConfig(p),
+		container:       c,
+		process:         p,
+		bootstrapData:   data,
+		sharePidns:      sharePidns,
+	}
+	c.initProcess = init
+	return init, nil
+}
+```
+- startContainer -> runner.run(spec) ->  r.container.Start -> c.start -> parent.start
+> 执行进程称为bootstrap进程
+> 启动了 cmd，即启动了 runc init 命令,创建 runc init 子进程 
+> 同时也激活了C代码nsenter模块的执行（为了 namespace 的设置 clone 了三个进程parent、child、init）
+> C 代码执行后返回 go 代码部分,最后的 init 子进程为了好区分此处命名为" nsInit "（即配置了Namespace的init）
+> runc init go代码为容器初始化其它部分(网络、rootfs、路由、主机名、console、安全等)
+```
+type initProcess struct {
+	cmd             *exec.Cmd
+	messageSockPair filePair
+	logFilePair     filePair
+	config          *initConfig
+	manager         cgroups.Manager
+	intelRdtManager intelrdt.Manager
+	container       *linuxContainer
+	fds             []string
+	process         *Process
+	bootstrapData   io.Reader
+	sharePidns      bool
+}
+
+func (p *initProcess) start() (retErr error) {
+	defer p.messageSockPair.parent.Close() //nolint: errcheck
+	err := p.cmd.Start()
+	p.process.ops = p
+	// close the write-side of the pipes (controlled by child)
+	_ = p.messageSockPair.child.Close()
+	_ = p.logFilePair.child.Close()
+	if err != nil {
+		p.process.ops = nil
+		return fmt.Errorf("unable to start init: %w", err)
+	}
+
+	waitInit := initWaiter(p.messageSockPair.parent)
+	defer func() {
+		if retErr != nil {
+			// Find out if init is killed by the kernel's OOM killer.
+			// Get the count before killing init as otherwise cgroup
+			// might be removed by systemd.
+			oom, err := p.manager.OOMKillCount()
+			if err != nil {
+				logrus.WithError(err).Warn("unable to get oom kill count")
+			} else if oom > 0 {
+				// Does not matter what the particular error was,
+				// its cause is most probably OOM, so report that.
+				const oomError = "container init was OOM-killed (memory limit too low?)"
+
+				if logrus.GetLevel() >= logrus.DebugLevel {
+					// Only show the original error if debug is set,
+					// as it is not generally very useful.
+					retErr = fmt.Errorf(oomError+": %w", retErr)
+				} else {
+					retErr = errors.New(oomError)
+				}
+			}
+
+			werr := <-waitInit
+			if werr != nil {
+				logrus.WithError(werr).Warn()
+			}
+
+			// Terminate the process to ensure we can remove cgroups.
+			if err := ignoreTerminateErrors(p.terminate()); err != nil {
+				logrus.WithError(err).Warn("unable to terminate initProcess")
+			}
+
+			_ = p.manager.Destroy()
+			if p.intelRdtManager != nil {
+				_ = p.intelRdtManager.Destroy()
+			}
+		}
+	}()
+
+	// Do this before syncing with child so that no children can escape the
+	// cgroup. We don't need to worry about not doing this and not being root
+	// because we'd be using the rootless cgroup manager in that case.
+	if err := p.manager.Apply(p.pid()); err != nil {
+		return fmt.Errorf("unable to apply cgroup configuration: %w", err)
+	}
+	if p.intelRdtManager != nil {
+		if err := p.intelRdtManager.Apply(p.pid()); err != nil {
+			return fmt.Errorf("unable to apply Intel RDT configuration: %w", err)
+		}
+	}
+	if _, err := io.Copy(p.messageSockPair.parent, p.bootstrapData); err != nil {
+		return fmt.Errorf("can't copy bootstrap data to pipe: %w", err)
+	}
+	err = <-waitInit
+	if err != nil {
+		return err
+	}
+
+	childPid, err := p.getChildPid()
+	if err != nil {
+		return fmt.Errorf("can't get final child's PID from pipe: %w", err)
+	}
+
+	// Save the standard descriptor names before the container process
+	// can potentially move them (e.g., via dup2()).  If we don't do this now,
+	// we won't know at checkpoint time which file descriptor to look up.
+	fds, err := getPipeFds(childPid)
+	if err != nil {
+		return fmt.Errorf("error getting pipe fds for pid %d: %w", childPid, err)
+	}
+	p.setExternalDescriptors(fds)
+
+	// Wait for our first child to exit
+	if err := p.waitForChildExit(childPid); err != nil {
+		return fmt.Errorf("error waiting for our first child to exit: %w", err)
+	}
+
+	if err := p.createNetworkInterfaces(); err != nil {
+		return fmt.Errorf("error creating network interfaces: %w", err)
+	}
+	if err := p.updateSpecState(); err != nil {
+		return fmt.Errorf("error updating spec state: %w", err)
+	}
+	if err := p.sendConfig(); err != nil {
+		return fmt.Errorf("error sending config to init process: %w", err)
+	}
+	var (
+		sentRun    bool
+		sentResume bool
+	)
+
+	ierr := parseSync(p.messageSockPair.parent, func(sync *syncT) error {
+		switch sync.Type {
+		case procReady:
+			// set rlimits, this has to be done here because we lose permissions
+			// to raise the limits once we enter a user-namespace
+			if err := setupRlimits(p.config.Rlimits, p.pid()); err != nil {
+				return fmt.Errorf("error setting rlimits for ready process: %w", err)
+			}
+			// call prestart and CreateRuntime hooks
+			if !p.config.Config.Namespaces.Contains(configs.NEWNS) {
+				// Setup cgroup before the hook, so that the prestart and CreateRuntime hook could apply cgroup permissions.
+				if err := p.manager.Set(p.config.Config.Cgroups.Resources); err != nil {
+					return fmt.Errorf("error setting cgroup config for ready process: %w", err)
+				}
+				if p.intelRdtManager != nil {
+					if err := p.intelRdtManager.Set(p.config.Config); err != nil {
+						return fmt.Errorf("error setting Intel RDT config for ready process: %w", err)
+					}
+				}
+
+				if p.config.Config.Hooks != nil {
+					s, err := p.container.currentOCIState()
+					if err != nil {
+						return err
+					}
+					// initProcessStartTime hasn't been set yet.
+					s.Pid = p.cmd.Process.Pid
+					s.Status = specs.StateCreating
+					hooks := p.config.Config.Hooks
+
+					if err := hooks[configs.Prestart].RunHooks(s); err != nil {
+						return err
+					}
+					if err := hooks[configs.CreateRuntime].RunHooks(s); err != nil {
+						return err
+					}
+				}
+			}
+
+			// generate a timestamp indicating when the container was started
+			p.container.created = time.Now().UTC()
+			p.container.state = &createdState{
+				c: p.container,
+			}
+
+			// NOTE: If the procRun state has been synced and the
+			// runc-create process has been killed for some reason,
+			// the runc-init[2:stage] process will be leaky. And
+			// the runc command also fails to parse root directory
+			// because the container doesn't have state.json.
+			//
+			// In order to cleanup the runc-init[2:stage] by
+			// runc-delete/stop, we should store the status before
+			// procRun sync.
+			state, uerr := p.container.updateState(p)
+			if uerr != nil {
+				return fmt.Errorf("unable to store init state: %w", err)
+			}
+			p.container.initProcessStartTime = state.InitProcessStartTime
+
+			// Sync with child.
+			if err := writeSync(p.messageSockPair.parent, procRun); err != nil {
+				return fmt.Errorf("error writing syncT 'run': %w", err)
+			}
+			sentRun = true
+		case procHooks:
+			// Setup cgroup before prestart hook, so that the prestart hook could apply cgroup permissions.
+			if err := p.manager.Set(p.config.Config.Cgroups.Resources); err != nil {
+				return fmt.Errorf("error setting cgroup config for procHooks process: %w", err)
+			}
+			if p.intelRdtManager != nil {
+				if err := p.intelRdtManager.Set(p.config.Config); err != nil {
+					return fmt.Errorf("error setting Intel RDT config for procHooks process: %w", err)
+				}
+			}
+			if p.config.Config.Hooks != nil {
+				s, err := p.container.currentOCIState()
+				if err != nil {
+					return err
+				}
+				// initProcessStartTime hasn't been set yet.
+				s.Pid = p.cmd.Process.Pid
+				s.Status = specs.StateCreating
+				hooks := p.config.Config.Hooks
+
+				if err := hooks[configs.Prestart].RunHooks(s); err != nil {
+					return err
+				}
+				if err := hooks[configs.CreateRuntime].RunHooks(s); err != nil {
+					return err
+				}
+			}
+			// Sync with child.
+			if err := writeSync(p.messageSockPair.parent, procResume); err != nil {
+				return fmt.Errorf("error writing syncT 'resume': %w", err)
+			}
+			sentResume = true
+		default:
+			return errors.New("invalid JSON payload from child")
+		}
+
+		return nil
+	})
+
+	if !sentRun {
+		return fmt.Errorf("error during container init: %w", ierr)
+	}
+	if p.config.Config.Namespaces.Contains(configs.NEWNS) && !sentResume {
+		return errors.New("could not synchronise after executing prestart and CreateRuntime hooks with container process")
+	}
+	if err := unix.Shutdown(int(p.messageSockPair.parent.Fd()), unix.SHUT_WR); err != nil {
+		return &os.PathError{Op: "shutdown", Path: "(init pipe)", Err: err}
+	}
+
+	// Must be done after Shutdown so the child will exit and we can wait for it.
+	if ierr != nil {
+		_, _ = p.wait()
+		return ierr
+	}
+	return nil
+}
+```
