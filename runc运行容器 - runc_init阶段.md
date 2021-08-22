@@ -1,5 +1,5 @@
-# runc 运行容器 init部分
-> $ runc init是bootstrap阶段启动的子进程
+# runc运行容器init阶段
+> $ runc init是bootstrap阶段启动的一个子进程，用来完成容器的真正隔离运行。这个运行阶段简称runc_init吧，用来和bootstrap区分
 
 ### runc init代码的go入口
 ```diff
