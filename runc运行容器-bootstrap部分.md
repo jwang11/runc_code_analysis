@@ -1,5 +1,9 @@
 # runc 运行容器
-> 命令行runc run image
+> 命令行运行：$runc run image
+> runc的实现分为两个大阶段:
+> 第一个阶段叫bootstrap, 设置一些环境以及配置信息, 创建匿名管道， 把容器的配置信息通过管道发送给第二阶段。
+> 第二个阶段叫init， 主要就是创建子进程并根据管道传过来的配置信息，设置进程的namespace信息。
+
 
 ### 命令[代码入口](https://github.com/opencontainers/runc/blob/master/run.go)
 ```diff
@@ -76,7 +80,7 @@ command(s) that get executed on start, edit the args parameter of the spec. See
 	},
 }
 ```
-- 一个典型的runtime spec文件
+- 一个典型的oci runtime spec文件
 ```
 {
         "ociVersion": "1.0.2-dev",
@@ -350,7 +354,7 @@ func createContainer(context *cli.Context, id string, spec *specs.Spec) (libcont
 ```
 
 - startContainer -> createContainer -> loadFactory. 创建平台相关的factory，如linux factory
-```
+```diff
 func loadFactory(context *cli.Context) (libcontainer.Factory, error) {
 	root := context.GlobalString("root")
 	abs, err := filepath.Abs(root)
@@ -397,7 +401,10 @@ func loadFactory(context *cli.Context) (libcontainer.Factory, error) {
 		libcontainer.NewuidmapPath(newuidmap),
 		libcontainer.NewgidmapPath(newgidmap))
 }
+```
 
+- startContainer -> createContainer -> loadFactory -> New
+```diff
 // New returns a linux based container factory based in the root directory and
 // configures the factory with the provided option funcs.
 func New(root string, options ...func(*LinuxFactory) error) (Factory, error) {
@@ -408,8 +415,9 @@ func New(root string, options ...func(*LinuxFactory) error) (Factory, error) {
 	}
 	l := &LinuxFactory{
 		Root:      root,
-		InitPath:  "/proc/self/exe",
-		InitArgs:  []string{os.Args[0], "init"},
++		// 构成了runc init命令
++		InitPath:  "/proc/self/exe",
++		InitArgs:  []string{os.Args[0], "init"},
 		Validator: validate.New(),
 		CriuPath:  "criu",
 	}
@@ -442,9 +450,10 @@ type LinuxFactory struct {
 	// a container.
 	InitArgs []string
 
-	// CriuPath is the path to the criu binary used for checkpoint and restore of
-	// containers.
-	CriuPath string
++	// Linux用户检查点/恢复项目( Linux Checkpoint/Restore In Userspace，CRIU)
++	// CriuPath is the path to the criu binary used for checkpoint and restore of
++	// containers.
++	CriuPath string
 
 	// New{u,g}idmapPath is the path to the binaries used for mapping with
 	// rootless containers.
@@ -489,7 +498,7 @@ func (l *LinuxFactory) Create(id string, config *configs.Config) (Container, err
 	if err := os.Chown(containerRoot, unix.Geteuid(), unix.Getegid()); err != nil {
 		return nil, err
 	}
-	c := &linuxContainer{
++	c := &linuxContainer{
 		id:            id,
 		root:          containerRoot,
 		config:        config,
@@ -611,12 +620,12 @@ func (r *runner) run(config *specs.Process) (int, error) {
 	return status, err
 }
 ```
-- runner.run -> newProcess
-```
+- startContainer -> runner.run -> newProcess
+```diff
 // newProcess returns a new libcontainer Process with the arguments from the
 // spec and stdio from the current process.
 func newProcess(p specs.Process, init bool, logLevel string) (*libcontainer.Process, error) {
-	lp := &libcontainer.Process{
++	lp := &libcontainer.Process{
 		Args: p.Args,
 		Env:  p.Env,
 		// TODO: fix libcontainer's API to better support uid/gid in a typesafe way.
@@ -726,13 +735,13 @@ func (c *linuxContainer) start(process *Process) (retErr error) {
 
 - startContainer -> runner.run(spec) ->  r.container.Start -> c.start -> c.newParentProcess
 创建sockPair用于parent和child通信
-```
+```diff
 func (c *linuxContainer) newParentProcess(p *Process) (parentProcess, error) {
-	parentInitPipe, childInitPipe, err := utils.NewSockPair("init")
++	parentInitPipe, childInitPipe, err := utils.NewSockPair("init")
 	if err != nil {
 		return nil, fmt.Errorf("unable to create init pipe: %w", err)
 	}
-	messageSockPair := filePair{parentInitPipe, childInitPipe}
++	messageSockPair := filePair{parentInitPipe, childInitPipe}
 
 	parentLogPipe, childLogPipe, err := os.Pipe()
 	if err != nil {
@@ -757,7 +766,7 @@ func (c *linuxContainer) newParentProcess(p *Process) (parentProcess, error) {
 }
 ```
 - startContainer -> runner.run(spec) ->  r.container.Start -> c.start -> c.newParentProcess -> c.newInitProcess
-```
+```diff
 func (c *linuxContainer) newInitProcess(p *Process, cmd *exec.Cmd, messageSockPair, logFilePair filePair) (*initProcess, error) {
 	cmd.Env = append(cmd.Env, "_LIBCONTAINER_INITTYPE="+string(initStandard))
 	nsMaps := make(map[configs.NamespaceType]string)
@@ -767,7 +776,8 @@ func (c *linuxContainer) newInitProcess(p *Process, cmd *exec.Cmd, messageSockPa
 		}
 	}
 	_, sharePidns := nsMaps[configs.NEWPID]
-	data, err := c.bootstrapData(c.config.Namespaces.CloneFlags(), nsMaps)
++	// 生成bootstrapData，等待发送给runc init进程
++	data, err := c.bootstrapData(c.config.Namespaces.CloneFlags(), nsMaps)
 	if err != nil {
 		return nil, err
 	}
@@ -788,10 +798,9 @@ func (c *linuxContainer) newInitProcess(p *Process, cmd *exec.Cmd, messageSockPa
 }
 ```
 - startContainer -> runner.run(spec) ->  r.container.Start -> c.start -> parent.start
-> 执行进程称为bootstrap进程
-> 启动了 cmd，即启动了 runc init 命令,创建 runc init 子进程 
-> 同时也激活了C代码nsenter模块的执行（为了 namespace 的设置 clone 了三个进程parent、child、init）
-> C 代码执行后返回 go 代码部分,最后的 init 子进程为了好区分此处命名为" nsInit "（即配置了Namespace的init）
+> 当前的bootstrap进程启动了cmd，即启动了 runc init 命令,创建 runc init 子进程。 
+> runc init激活了C代码nsenter模块的执行（为了namespace的设置 clone 了三个进程parent、child、init）
+> C代码执行后返回 go 代码部分后的 init 子进程为了好区分此处命名为" nsInit "（即配置了Namespace的init）
 > runc init go代码为容器初始化其它部分(网络、rootfs、路由、主机名、console、安全等)
 ```
 type initProcess struct {
