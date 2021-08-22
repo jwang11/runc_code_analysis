@@ -101,11 +101,12 @@ void nsexec(void)
 	 */
 	setup_logpipe();
 
++	// initPipe检查有没有设置环境变量_LIBCONTAINER_INITPIPE，如果没有就直接退出了，我们的case在前面已经设置为bootstrap创建的管道的childPipe
 	/*
 	 * If we don't have an init pipe, just return to the go routine.
 	 * We'll only get an init pipe for start or exec.
 	 */
-	pipenum = initpipe();
++	pipenum = initpipe();
 	if (pipenum == -1)
 		return;
 
@@ -125,9 +126,11 @@ void nsexec(void)
 		bail("could not inform the parent we are past initial setup");
 
 	write_log(DEBUG, "=> nsexec container setup");
-
+	
++	//调用nl_parse来获取bootstrap发送的namespace的配置信息， 在initProcess.start的第一步我们就看到bootstrap通过调用io.Copy(p.parentPipe, p.bootstrapData)往管道里写入了这些信息，
++	//这边借用+了netlink payload实现，正常netlink用于userspace和kernelspace的进程通信，这边只是借助这个消息编解码格式来在不同进程之间的传递多种消息。
 	/* Parse all of the netlink configuration. */
-	nl_parse(pipenum, &config);
++	nl_parse(pipenum, &config);
 
 	/* Set oom_score_adj. This has to be done before !dumpable because
 	 * /proc/self/oom_score_adj is not writeable unless you're an privileged
