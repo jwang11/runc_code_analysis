@@ -798,10 +798,9 @@ func (c *linuxContainer) newInitProcess(p *Process, cmd *exec.Cmd, messageSockPa
 }
 ```
 - startContainer -> runner.run(spec) ->  r.container.Start -> c.start -> parent.start
-> 当前的bootstrap进程启动了cmd，即启动了 runc init 命令,创建 runc init 子进程。 
-> runc init激活了C代码nsenter模块的执行（为了namespace的设置 clone 了三个进程parent、child、init）
-> C代码执行后返回 go 代码部分后的 init 子进程为了好区分此处命名为" nsInit "（即配置了Namespace的init）
-> runc init go代码为容器初始化其它部分(网络、rootfs、路由、主机名、console、安全等)
+> 当前的bootstrap进程启动了cmd，即启动了runc init 命令，创建 runc init 进程。 
+> runc init激活了C代码nsenter模块的执行。nsenter模块clone 了三个进程parent、child、init，用来配置namespace
+> nsenter结束后，继续go代码执行，为容器初始化其它部分(网络、rootfs、路由、主机名、console、安全等)
 ```
 type initProcess struct {
 	cmd             *exec.Cmd
