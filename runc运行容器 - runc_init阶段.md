@@ -363,7 +363,8 @@ void nsexec(void)
 			}
 			write_log(DEBUG, "<- stage-2 synchronisation loop");
 			write_log(DEBUG, "<~ nsexec stage-0");
-			exit(0);
++			// nsenter三进程中第二个领盒饭的。			
++			exit(0);
 		}
 		break;
 
@@ -521,7 +522,8 @@ void nsexec(void)
 
 			/* Our work is done. [Stage 2: STAGE_INIT] is doing the rest of the work. */
 			write_log(DEBUG, "<~ nsexec stage-1");
-			exit(0);
++			// CHILD是nsenter三个进程中第一个领盒饭的
++			exit(0);
 		}
 		break;
 
@@ -585,7 +587,7 @@ void nsexec(void)
 
 			/* Free netlink data. */
 			nl_free(&config);
-
++			// 接下来又重新被go的部分接管
 			/* Finish executing, let the Go runtime take over. */
 			write_log(DEBUG, "<= nsexec container setup");
 			write_log(DEBUG, "booting up go runtime ...");
