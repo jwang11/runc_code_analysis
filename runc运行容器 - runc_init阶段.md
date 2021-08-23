@@ -127,8 +127,9 @@ void nsexec(void)
 
 	write_log(DEBUG, "=> nsexec container setup");
 	
-+	//调用nl_parse来获取bootstrap发送的namespace的配置信息， 在initProcess.start的第一步我们就看到bootstrap通过调用io.Copy(p.parentPipe, p.bootstrapData)往管道里写入了这些信息，
-+	//这边借用+了netlink payload实现，正常netlink用于userspace和kernelspace的进程通信，这边只是借助这个消息编解码格式来在不同进程之间的传递多种消息。
++	//调用nl_parse来获取bootstrap发送的namespace的配置信息。
++	//在initProcess.start中bootstrap通过调用io.Copy(p.parentPipe, p.bootstrapData)往管道里写入了这些信息，
++	//这边借用netlink payload实现(消息编解码格式)来在不同进程之间的传递多种消息。
 	/* Parse all of the netlink configuration. */
 +	nl_parse(pipenum, &config);
 
@@ -236,7 +237,8 @@ void nsexec(void)
 
 			/* Start the process of getting a container. */
 			write_log(DEBUG, "spawn stage-1");
-			stage1_pid = clone_parent(&env, STAGE_CHILD);
++			// clone如果设置了CLONE_PARENT，子进程的父进程(使用getppid(2)获取)和调用进程的父进程相同。
++			stage1_pid = clone_parent(&env, STAGE_CHILD);
 			if (stage1_pid < 0)
 				bail("unable to spawn stage-1");
 
@@ -252,8 +254,8 @@ void nsexec(void)
 			stage1_complete = false;
 			while (!stage1_complete) {
 				enum sync_t s;
-
-				if (read(syncfd, &s, sizeof(s)) != sizeof(s))
++
++				if (read(syncfd, &s, sizeof(s)) != sizeof(s))
 					bail("failed to sync with stage-1: next state");
 
 				switch (s) {
@@ -596,5 +598,98 @@ void nsexec(void)
 
 	/* Should never be reached. */
 	bail("should never be reached");
+}
+```
+
+### 讲解几个重要函数
+- clone_parent函数
+```
+/* A dummy function that just jumps to the given jumpval. */
+static int child_func(void *arg) __attribute__((noinline));
+static int child_func(void *arg)
+{
+	struct clone_t *ca = (struct clone_t *)arg;
+	longjmp(*ca->env, ca->jmpval);
+}
+
+static int clone_parent(jmp_buf *env, int jmpval) __attribute__((noinline));
+static int clone_parent(jmp_buf *env, int jmpval)
+{
+	struct clone_t ca = {
+		.env = env,
+		.jmpval = jmpval,
+	};
+
+	return clone(child_func, ca.stack_ptr, CLONE_PARENT | SIGCHLD, &ca);
+}
+```
+
+- join_namespaces
+```
+void join_namespaces(char *nslist)
+{
+	int num = 0, i;
+	char *saveptr = NULL;
+	char *namespace = strtok_r(nslist, ",", &saveptr);
+	struct namespace_t {
+		int fd;
+		char type[PATH_MAX];
+		char path[PATH_MAX];
+	} *namespaces = NULL;
+
+	if (!namespace || !strlen(namespace) || !strlen(nslist))
+		bail("ns paths are empty");
+
+	/*
+	 * We have to open the file descriptors first, since after
+	 * we join the mnt namespace we might no longer be able to
+	 * access the paths.
+	 */
+	do {
+		int fd;
+		char *path;
+		struct namespace_t *ns;
+
+		/* Resize the namespace array. */
+		namespaces = realloc(namespaces, ++num * sizeof(struct namespace_t));
+		if (!namespaces)
+			bail("failed to reallocate namespace array");
+		ns = &namespaces[num - 1];
+
+		/* Split 'ns:path'. */
+		path = strstr(namespace, ":");
+		if (!path)
+			bail("failed to parse %s", namespace);
+		*path++ = '\0';
+
+		fd = open(path, O_RDONLY);
+		if (fd < 0)
+			bail("failed to open %s", path);
+
+		ns->fd = fd;
+		strncpy(ns->type, namespace, PATH_MAX - 1);
+		strncpy(ns->path, path, PATH_MAX - 1);
+		ns->path[PATH_MAX - 1] = '\0';
+	} while ((namespace = strtok_r(NULL, ",", &saveptr)) != NULL);
+
+	/*
+	 * The ordering in which we join namespaces is important. We should
+	 * always join the user namespace *first*. This is all guaranteed
+	 * from the container_linux.go side of this, so we're just going to
+	 * follow the order given to us.
+	 */
+
+	for (i = 0; i < num; i++) {
+		struct namespace_t *ns = &namespaces[i];
+		int flag = nsflag(ns->type);
+
+		write_log(DEBUG, "setns(%#x) into %s namespace (with path %s)", flag, ns->type, ns->path);
+		if (setns(ns->fd, flag) < 0)
+			bail("failed to setns into %s namespace", ns->type);
+
+		close(ns->fd);
+	}
+
+	free(namespaces);
 }
 ```
