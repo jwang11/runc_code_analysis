@@ -695,3 +695,357 @@ void join_namespaces(char *nslist)
 	free(namespaces);
 }
 ```
+### 回到runc_init的go代码部分
+- init -> libcontainer.New
+```
+func init() {
+	if len(os.Args) > 1 && os.Args[1] == "init" {
+		// This is the golang entry point for runc init, executed
+		// before main() but after libcontainer/nsenter's nsexec().
+		runtime.GOMAXPROCS(1)
+		runtime.LockOSThread()
+
+		level := os.Getenv("_LIBCONTAINER_LOGLEVEL")
+		logLevel, err := logrus.ParseLevel(level)
+		if err != nil {
+			panic(fmt.Sprintf("libcontainer: failed to parse log level: %q: %v", level, err))
+		}
+
+		logPipeFdStr := os.Getenv("_LIBCONTAINER_LOGPIPE")
+		logPipeFd, err := strconv.Atoi(logPipeFdStr)
+		if err != nil {
+			panic(fmt.Sprintf("libcontainer: failed to convert environment variable _LIBCONTAINER_LOGPIPE=%s to int: %s", logPipeFdStr, err))
+		}
+		err = logs.ConfigureLogging(logs.Config{
+			LogPipeFd: logPipeFd,
+			LogFormat: "json",
+			LogLevel:  logLevel,
+		})
+		if err != nil {
+			panic(fmt.Sprintf("libcontainer: failed to configure logging: %v", err))
+		}
+		logrus.Debug("child process in init()")
+
+		factory, _ := libcontainer.New("")
+		if err := factory.StartInitialization(); err != nil {
+			// as the error is sent back to the parent there is no need to log
+			// or write it to stderr because the parent process will handle this
+			os.Exit(1)
+		}
+		panic("libcontainer: container init failed to exec")
+	}
+}
+```
+
+- init -> factory.StartInitialization
+```diff
+func (l *LinuxFactory) StartInitialization() (err error) {
++	// 获取init的管道，用来和bootstrap那边通话	
+	// Get the INITPIPE.
+	envInitPipe := os.Getenv("_LIBCONTAINER_INITPIPE")
+	pipefd, err := strconv.Atoi(envInitPipe)
+	if err != nil {
+		return fmt.Errorf("unable to convert _LIBCONTAINER_INITPIPE: %w", err)
+	}
+	pipe := os.NewFile(uintptr(pipefd), "pipe")
+	defer pipe.Close()
+
+	// Only init processes have FIFOFD.
+	fifofd := -1
+	envInitType := os.Getenv("_LIBCONTAINER_INITTYPE")
+	it := initType(envInitType)
+	if it == initStandard {
+		envFifoFd := os.Getenv("_LIBCONTAINER_FIFOFD")
+		if fifofd, err = strconv.Atoi(envFifoFd); err != nil {
+			return fmt.Errorf("unable to convert _LIBCONTAINER_FIFOFD: %w", err)
+		}
+	}
+
+	var consoleSocket *os.File
+	if envConsole := os.Getenv("_LIBCONTAINER_CONSOLE"); envConsole != "" {
+		console, err := strconv.Atoi(envConsole)
+		if err != nil {
+			return fmt.Errorf("unable to convert _LIBCONTAINER_CONSOLE: %w", err)
+		}
+		consoleSocket = os.NewFile(uintptr(console), "console-socket")
+		defer consoleSocket.Close()
+	}
+
+	logPipeFdStr := os.Getenv("_LIBCONTAINER_LOGPIPE")
+	logPipeFd, err := strconv.Atoi(logPipeFdStr)
+	if err != nil {
+		return fmt.Errorf("unable to convert _LIBCONTAINER_LOGPIPE: %w", err)
+	}
+
+	// clear the current process's environment to clean any libcontainer
+	// specific env vars.
+	os.Clearenv()
+
+	defer func() {
+		// We have an error during the initialization of the container's init,
+		// send it back to the parent process in the form of an initError.
+		if werr := utils.WriteJSON(pipe, syncT{procError}); werr != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return
+		}
+		if werr := utils.WriteJSON(pipe, &initError{Message: err.Error()}); werr != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return
+		}
+	}()
+	defer func() {
+		if e := recover(); e != nil {
+			err = fmt.Errorf("panic from initialization: %w, %v", e, string(debug.Stack()))
+		}
+	}()
+
++	i, err := newContainerInit(it, pipe, consoleSocket, fifofd, logPipeFd)
+	if err != nil {
+		return err
+	}
+
+	// If Init succeeds, syscall.Exec will not return, hence none of the defers will be called.
++	return i.Init()
+}
+```
+
+- init -> factory.StartInitialization -> newContainerInit
+> 这里面又两个分支，如果runc run，走initStandard；如果runc exec，
+```
+func newContainerInit(t initType, pipe *os.File, consoleSocket *os.File, fifoFd, logFd int) (initer, error) {
+	var config *initConfig
+	if err := json.NewDecoder(pipe).Decode(&config); err != nil {
+		return nil, err
+	}
+	if err := populateProcessEnvironment(config.Env); err != nil {
+		return nil, err
+	}
+	switch t {
+	case initSetns:
+		return &linuxSetnsInit{
+			pipe:          pipe,
+			consoleSocket: consoleSocket,
+			config:        config,
+			logFd:         logFd,
+		}, nil
+	case initStandard:
+		return &linuxStandardInit{
+			pipe:          pipe,
+			consoleSocket: consoleSocket,
+			parentPid:     unix.Getppid(),
+			config:        config,
+			fifoFd:        fifoFd,
+			logFd:         logFd,
+		}, nil
+	}
+	return nil, fmt.Errorf("unknown init type %q", t)
+}
+```
+
+- init -> factory.StartInitialization -> newContainerInit -> linuxStandardInit
+```
+type linuxStandardInit struct {
+	pipe          *os.File
+	consoleSocket *os.File
+	parentPid     int
+	fifoFd        int
+	logFd         int
+	config        *initConfig
+}
+```
+
+- init -> factory.StartInitialization ->  i.Init
+> i.Init() 实际上就是linuxStandardInit.Init
+```diff
+func (l *linuxStandardInit) Init() error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if !l.config.Config.NoNewKeyring {
+		if err := selinux.SetKeyLabel(l.config.ProcessLabel); err != nil {
+			return err
+		}
+		defer selinux.SetKeyLabel("") //nolint: errcheck
+		ringname, keepperms, newperms := l.getSessionRingParams()
+
+		// Do not inherit the parent's session keyring.
+		if sessKeyId, err := keys.JoinSessionKeyring(ringname); err != nil {
+			// If keyrings aren't supported then it is likely we are on an
+			// older kernel (or inside an LXC container). While we could bail,
+			// the security feature we are using here is best-effort (it only
+			// really provides marginal protection since VFS credentials are
+			// the only significant protection of keyrings).
+			//
+			// TODO(cyphar): Log this so people know what's going on, once we
+			//               have proper logging in 'runc init'.
+			if !errors.Is(err, unix.ENOSYS) {
+				return fmt.Errorf("unable to join session keyring: %w", err)
+			}
+		} else {
+			// Make session keyring searchable. If we've gotten this far we
+			// bail on any error -- we don't want to have a keyring with bad
+			// permissions.
+			if err := keys.ModKeyringPerm(sessKeyId, keepperms, newperms); err != nil {
+				return fmt.Errorf("unable to mod keyring permissions: %w", err)
+			}
+		}
+	}
+
++	// setup网络，调用第三方 netlink.LinkSetup
++	if err := setupNetwork(l.config); err != nil {
+		return err
+	}
++	// setup静态路由，调用第三方 netlink.RouteAdd
++	if err := setupRoute(l.config.Config); err != nil {
+		return err
+	}
+
+	// initialises the labeling system
+	selinux.GetEnabled()
+	if err := prepareRootfs(l.pipe, l.config); err != nil {
+		return err
+	}
+	// Set up the console. This has to be done *before* we finalize the rootfs,
+	// but *after* we've given the user the chance to set up all of the mounts
+	// they wanted.
+	if l.config.CreateConsole {
+		if err := setupConsole(l.consoleSocket, l.config, true); err != nil {
+			return err
+		}
+		if err := system.Setctty(); err != nil {
+			return &os.SyscallError{Syscall: "ioctl(setctty)", Err: err}
+		}
+	}
+
++	// rootfs设置
+	// Finish the rootfs setup.
+	if l.config.Config.Namespaces.Contains(configs.NEWNS) {
+		if err := finalizeRootfs(l.config.Config); err != nil {
+			return err
+		}
+	}
+
+	if hostname := l.config.Config.Hostname; hostname != "" {
+		if err := unix.Sethostname([]byte(hostname)); err != nil {
+			return &os.SyscallError{Syscall: "sethostname", Err: err}
+		}
+	}
+	if err := apparmor.ApplyProfile(l.config.AppArmorProfile); err != nil {
+		return fmt.Errorf("unable to apply apparmor profile: %w", err)
+	}
+
+	for key, value := range l.config.Config.Sysctl {
+		if err := writeSystemProperty(key, value); err != nil {
+			return err
+		}
+	}
+	for _, path := range l.config.Config.ReadonlyPaths {
+		if err := readonlyPath(path); err != nil {
+			return fmt.Errorf("can't make %q read-only: %w", path, err)
+		}
+	}
+	for _, path := range l.config.Config.MaskPaths {
+		if err := maskPath(path, l.config.Config.MountLabel); err != nil {
+			return fmt.Errorf("can't mask path %s: %w", path, err)
+		}
+	}
+	pdeath, err := system.GetParentDeathSignal()
+	if err != nil {
+		return fmt.Errorf("can't get pdeath signal: %w", err)
+	}
+	if l.config.NoNewPrivileges {
+		if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+			return &os.SyscallError{Syscall: "prctl(SET_NO_NEW_PRIVS)", Err: err}
+		}
+	}
++	// 容器创建以及完毕，通知Parent准备执行命令
+	// Tell our parent that we're ready to Execv. This must be done before the
+	// Seccomp rules have been applied, because we need to be able to read and
+	// write to a socket.
++	if err := syncParentReady(l.pipe); err != nil {
+		return fmt.Errorf("sync ready: %w", err)
+	}
+	if err := selinux.SetExecLabel(l.config.ProcessLabel); err != nil {
+		return fmt.Errorf("can't set process label: %w", err)
+	}
+	defer selinux.SetExecLabel("") //nolint: errcheck
+	// Without NoNewPrivileges seccomp is a privileged operation, so we need to
+	// do this before dropping capabilities; otherwise do it as late as possible
+	// just before execve so as few syscalls take place after it as possible.
+	if l.config.Config.Seccomp != nil && !l.config.NoNewPrivileges {
+		if err := seccomp.InitSeccomp(l.config.Config.Seccomp); err != nil {
+			return err
+		}
+	}
++	// 根据config配置将需要的特权capabilities加入白名单，设置user namespace，关闭不需要的文件描述符。	
+	if err := finalizeNamespace(l.config); err != nil {
+		return err
+	}
+	// finalizeNamespace can change user/group which clears the parent death
+	// signal, so we restore it here.
+	if err := pdeath.Restore(); err != nil {
+		return fmt.Errorf("can't restore pdeath signal: %w", err)
+	}
+	// Compare the parent from the initial start of the init process and make
+	// sure that it did not change.  if the parent changes that means it died
+	// and we were reparented to something else so we should just kill ourself
+	// and not cause problems for someone else.
+	if unix.Getppid() != l.parentPid {
+		return unix.Kill(unix.Getpid(), unix.SIGKILL)
+	}
+	// Check for the arg before waiting to make sure it exists and it is
+	// returned as a create time error.
+	name, err := exec.LookPath(l.config.Args[0])
+	if err != nil {
+		return err
+	}
+	// Close the pipe to signal that we have completed our init.
+	logrus.Debugf("init: closing the pipe to signal completion")
+	_ = l.pipe.Close()
+
+	// Close the log pipe fd so the parent's ForwardLogs can exit.
+	if err := unix.Close(l.logFd); err != nil {
+		return &os.PathError{Op: "close log pipe", Path: "fd " + strconv.Itoa(l.logFd), Err: err}
+	}
+
++	// 只写方式打开fifo管道并写入0，会一直保持阻塞，直到管道的另一端以读方式打开，并读取内容，如runc start
+	// Wait for the FIFO to be opened on the other side before exec-ing the
+	// user process. We open it through /proc/self/fd/$fd, because the fd that
+	// was given to us was an O_PATH fd to the fifo itself. Linux allows us to
+	// re-open an O_PATH fd through /proc.
+	fifoPath := "/proc/self/fd/" + strconv.Itoa(l.fifoFd)
+	fd, err := unix.Open(fifoPath, unix.O_WRONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return &os.PathError{Op: "open exec fifo", Path: fifoPath, Err: err}
+	}
++	if _, err := unix.Write(fd, []byte("0")); err != nil {
+		return &os.PathError{Op: "write exec fifo", Path: fifoPath, Err: err}
+	}
+	// Close the O_PATH fifofd fd before exec because the kernel resets
+	// dumpable in the wrong order. This has been fixed in newer kernels, but
+	// we keep this to ensure CVE-2016-9962 doesn't re-emerge on older kernels.
+	// N.B. the core issue itself (passing dirfds to the host filesystem) has
+	// since been resolved.
+	// https://github.com/torvalds/linux/blob/v4.9/fs/exec.c#L1290-L1318
+	_ = unix.Close(l.fifoFd)
+	// Set seccomp as close to execve as possible, so as few syscalls take
+	// place afterward (reducing the amount of syscalls that users need to
+	// enable in their seccomp profiles).
+	if l.config.Config.Seccomp != nil && l.config.NoNewPrivileges {
+		if err := seccomp.InitSeccomp(l.config.Config.Seccomp); err != nil {
+			return fmt.Errorf("unable to init seccomp: %w", err)
+		}
+	}
+
+	s := l.config.SpecState
+	s.Pid = unix.Getpid()
+	s.Status = specs.StateCreated
+	if err := l.config.Config.Hooks[configs.StartContainer].RunHooks(s); err != nil {
+		return err
+	}
++	// 执行用户所指定的在容器中运行的程序
+	if err := system.Exec(name, l.config.Args[0:], os.Environ()); err != nil {
+		return fmt.Errorf("can't exec user process: %w", err)
+	}
+	return nil
+}
+```
