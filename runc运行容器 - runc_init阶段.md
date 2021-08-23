@@ -695,7 +695,7 @@ void join_namespaces(char *nslist)
 	free(namespaces);
 }
 ```
-### 回到runc_init的go代码部分
+### 回到init阶段的go代码部分
 - init -> libcontainer.New
 ```
 func init() {
