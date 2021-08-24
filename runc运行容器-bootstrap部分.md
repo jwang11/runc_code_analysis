@@ -5,7 +5,7 @@
 >> 
 >> 第二个阶段叫init， 主要就是创建子进程并根据管道传过来的配置信息，设置进程的namespace。
 
-![工作流程图](img/runc_nsenter_timeline.png) 
+![工作流程图](runc_nsenter_timeline.png) 
 ### [代码入口](https://github.com/opencontainers/runc/blob/master/run.go)
 ```diff
 // default action is to start a container
