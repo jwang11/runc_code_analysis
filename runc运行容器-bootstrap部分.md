@@ -997,7 +997,8 @@ type initProcess struct {
 
 func (p *initProcess) start() (retErr error) {
 	defer p.messageSockPair.parent.Close() //nolint: errcheck
-	err := p.cmd.Start()
++	// 启动runc init命令
++	err := p.cmd.Start()
 	p.process.ops = p
 	// close the write-side of the pipes (controlled by child)
 	_ = p.messageSockPair.child.Close()
@@ -1058,7 +1059,8 @@ func (p *initProcess) start() (retErr error) {
 			return fmt.Errorf("unable to apply Intel RDT configuration: %w", err)
 		}
 	}
-	if _, err := io.Copy(p.messageSockPair.parent, p.bootstrapData); err != nil {
++	// 写bootstrapData
++	if _, err := io.Copy(p.messageSockPair.parent, p.bootstrapData); err != nil {
 		return fmt.Errorf("can't copy bootstrap data to pipe: %w", err)
 	}
 	err = <-waitInit
@@ -1066,7 +1068,8 @@ func (p *initProcess) start() (retErr error) {
 		return err
 	}
 
-	childPid, err := p.getChildPid()
++	// 获取runc init(2)的PID
++	childPid, err := p.getChildPid()
 	if err != nil {
 		return fmt.Errorf("can't get final child's PID from pipe: %w", err)
 	}
@@ -1080,17 +1083,19 @@ func (p *initProcess) start() (retErr error) {
 	}
 	p.setExternalDescriptors(fds)
 
++	// 等待runc init(0)退出
 	// Wait for our first child to exit
 	if err := p.waitForChildExit(childPid); err != nil {
 		return fmt.Errorf("error waiting for our first child to exit: %w", err)
 	}
-
++	// 开始创建网卡。这里只是将loopback设置为up.
 	if err := p.createNetworkInterfaces(); err != nil {
 		return fmt.Errorf("error creating network interfaces: %w", err)
 	}
 	if err := p.updateSpecState(); err != nil {
 		return fmt.Errorf("error updating spec state: %w", err)
 	}
++	// 向 runc init 子进程发送配置
 	if err := p.sendConfig(); err != nil {
 		return fmt.Errorf("error sending config to init process: %w", err)
 	}
