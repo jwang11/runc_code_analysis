@@ -1,6 +1,7 @@
 # runc运行容器init阶段
-> $ runc init是bootstrap阶段启动的一个子进程，用来完成容器的真正隔离运行。这个运行阶段简称runc_init吧，用来和bootstrap区分
+> $ `runc init`是bootstrap阶段启动的一个子进程，用来完成容器的真正隔离运行。这个运行阶段简称runc_init吧，用来和bootstrap区分
 
+![工作流程图](runc_nsenter_timeline.png)
 ### runc init代码的go入口
 ```diff
 import (
