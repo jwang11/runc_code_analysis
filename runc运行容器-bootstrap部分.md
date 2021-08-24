@@ -868,6 +868,11 @@ func (c *linuxContainer) newInitProcess(p *Process, cmd *exec.Cmd, messageSockPa
 	return init, nil
 }
 ```
+总结一下通过环境变量传递的信息
+
+环境变量 | 文件描述符 | 作用 
+ -------- | ------ | ----------
+_LIBCONTAINER_CONSOLE | Terminal socket | config.json中Terminal设置为false，这里子进程没有此值
 
 - `bootscrapData`
 ```diff
