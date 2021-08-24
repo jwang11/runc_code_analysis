@@ -873,6 +873,12 @@ func (c *linuxContainer) newInitProcess(p *Process, cmd *exec.Cmd, messageSockPa
 环境变量 | 文件描述符 | 作用 
  -------- | ------ | ----------
 _LIBCONTAINER_CONSOLE | Terminal socket | config.json中Terminal设置为false，这里子进程没有此值
+_LIBCONTAINER_INITPIPE | unix socketpair一端  | 父子进程进程间通信主要方式
+_LIBCONTAINER_STATEDIR | * | runc执行的工作目录，跟容器id相关。默认为/run/runc/
+_LIBCONTAINER_LOGPIPE | pipe写端 | 子进程向父进程输出日志
+_LIBCONTAINER_LOGLEVEL | * | 日志级别 |
+_LIBCONTAINER_FIFOFD | exec.fifo |如果是runc create启动，在runc init执行后半段，exec entrypoint之前，进程会堵塞住，等待runc start唤醒。runc 用来实现暂停效果，也比较有意思。
+_LIBCONTAINER_INITTYPE | * | 值为standard或setns。如果为standard，则从_LIBCONTAINER_FIFOFD环境变量中获取到exec.fifo文件描述符，向这个描述符中写入一个"0"的字符串
 
 - `bootscrapData`
 ```diff
