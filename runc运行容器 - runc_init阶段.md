@@ -67,25 +67,25 @@ void __attribute__((constructor)) init(void) {
 */
 import "C"
 ```
-> 什么是 nsenter，nsenter 是 runc 中的一个package，它包含了一个特殊的C语言实现的构造函数（CGO），用来在 Go代码启动之前做一些事情，比如 setns()。
-> 在cgo中，如果在 C 的 import 后紧跟注释，则在编译程序包的 C 语言实现部分时，该注释将用作 header。
-> 因此，每次 import nsenter 时，nsexec()都会调用 C 函数。在 runc 中只有 init.go import 了 nsenter。
+> 什么是 nsenter，nsenter 是 runc 中的一个package，它包含了一个特殊的C语言实现的构造函数（CGO），用来在 Go代码启动之前做一些事情，比如 setns()。<br>
+> 在cgo中，如果在 C 的 import 后紧跟注释，则在编译程序包的 C 语言实现部分时，该注释将用作header。
+> 因此，每次 import nsenter 时，nsexec()都会调用 C 函数。在 runc 中只有 init.go import了nsenter。
 > 容器技术最关键的就是 namespace 和 cgroup，其中 namespace 是通过 setns() 函数来实现的，
 > 但是 setns() 有一个问题： A multithreaded process may not change user namespace with setns(). 。
-> 而 go runtime 是多线程的，所以需要在 go runtime 启动前执行 setns() 设置好 namespace，然后再走 go 相关实现流程。
+> 而go runtime是多线程的，所以需要在 go runtime 启动前执行setns()设置好 namespace，然后再走 go 相关实现流程。
 
 
 在实际的 nsenter 实现中，存在3个进程，分别为 parent, child, grandchild。<br>
 注意，这个三个进程是兄弟关系，不是父子关系。<br>
-在注释中可以看到 nsenter 实现过程中的考虑：来看下 parent，child，grandchild 分别做了哪些事情：
+在注释中可以看到nsenter实现过程中的考虑：
 
-> parent (runc init 0)
+> parent (init_0)
 >> parent 进程通过环境变量 _LIBCONTAINER_INITPIPE 获取相关配置信息，然后 clone 出 child 进程，当 child 进程 ready 之后设置 user map，从 child 进程中接受 grandchild 进程 pid，然后通过管道传递给外层的 runc 进程。parent 进程退出条件为 child 进程和 grandchild 都处于 ready 状态后，parent 进程退出。之所以要 clone child 进程，是因为如果创建了 user namespace，那么 user map 只能由原有的 user namespace 设置，所以需要 clone child 进程，然后在 parent 进程中设置 user map。
 
-> child (runc init 1)
+> child (init_1)
 >> child 进程先执行 setns()，在一些老版本的kernel 中，CLONE_PARENT flag 与 CLONE_NEWPID 有冲突，所以使用 unshare 创建 user namespace， user namespace 需要先于其他 namespace 创建，创建 user namespace 并设置 user map，才有能力创建其他的 namespace。等待 parent 进程设置 user map 后，设置 child 当前进程的 uid 为 root(0) ，使用 unshare 创建其他 namespace，然后 clone grandchild 进程，并将 grandchild 进程 pid 传递给 parent，然后退出。之所以要 clone grandchild 进程，是因为在 child 进程中设置 namespace 并不会在 child 进程中生效，所以需要 clone 出一个新的进程，继承 namespace 配置。
 
-> grandchild（runc init 2)
+> grandchild（init_2)
 >> grandchild 进程就是容器真正的进程，在确保 parent 和 child 进程都处于 ready 之后，设置 uid,gid，从管道中读取相应配置信息，然后 unshare 创建 cgroup namespace，然后将状态发送给 parent 后 返回。grandchild 进程返回后继续执行 go 代码流程。
 
 - init -> nsexec
@@ -112,6 +112,7 @@ void nsexec(void)
 	if (pipenum == -1)
 		return;
 
++	// 通过将runc重新挂载，载入到只读的内存当中，Fix CVE问题
 	/*
 	 * We need to re-exec if we are not in a cloned binary. This is necessary
 	 * to ensure that containers won't be able to access the host binary
@@ -120,6 +121,7 @@ void nsexec(void)
 	if (ensure_cloned_binary() < 0)
 		bail("could not ensure we are a cloned binary");
 
++	// 通知run create端initWaiter，runc init上线，nsenter要开始工作了
 	/*
 	 * Inform the parent we're past initial setup.
 	 * For the other side of this, see initWaiter.
@@ -159,10 +161,12 @@ void nsexec(void)
 			bail("failed to set process as non-dumpable");
 	}
 
++	// 创建与child，也就是init_1通信的sockpair 
 	/* Pipe so we can tell the child when we've finished setting up. */
 	if (socketpair(AF_LOCAL, SOCK_STREAM, 0, sync_child_pipe) < 0)
 		bail("failed to setup sync pipe between parent and child");
 
++	// 创建与grandchild，也就是init_2通信的sockpair 
 	/*
 	 * We need a new socketpair to sync with grandchild so we don't have
 	 * race condition with child.
@@ -256,8 +260,9 @@ void nsexec(void)
 			stage1_complete = false;
 			while (!stage1_complete) {
 				enum sync_t s;
-+
-+				if (read(syncfd, &s, sizeof(s)) != sizeof(s))
+
++				// 监听child的通道，处理相应的请求，如SYNC_USERMAP_PLS，SYNC_RECVPID_PLS等
+				if (read(syncfd, &s, sizeof(s)) != sizeof(s))
 					bail("failed to sync with stage-1: next state");
 
 				switch (s) {
@@ -291,6 +296,7 @@ void nsexec(void)
 				case SYNC_RECVPID_PLS:
 					write_log(DEBUG, "stage-1 requested pid to be forwarded");
 
++					// 得到init_2的pid，也就是grand child
 					/* Get the stage-2 pid. */
 					if (read(syncfd, &stage2_pid, sizeof(stage2_pid)) != sizeof(stage2_pid)) {
 						sane_kill(stage1_pid, SIGKILL);
@@ -306,6 +312,7 @@ void nsexec(void)
 						bail("failed to sync with stage-1: write(SYNC_RECVPID_ACK)");
 					}
 
++					// 把init_1和init_2的PID都发给runc_create
 					/*
 					 * Send both the stage-1 and stage-2 pids back to runc.
 					 * runc needs the stage-2 to continue process management,
@@ -339,6 +346,7 @@ void nsexec(void)
 			if (close(sync_grandchild_pipe[0]) < 0)
 				bail("failed to close sync_grandchild_pipe[0] fd");
 
++			// 和init_2保持sync，直到init_2完成所有任务
 			write_log(DEBUG, "-> stage-2 synchronisation loop");
 			stage2_complete = false;
 			while (!stage2_complete) {
@@ -365,7 +373,7 @@ void nsexec(void)
 			}
 			write_log(DEBUG, "<- stage-2 synchronisation loop");
 			write_log(DEBUG, "<~ nsexec stage-0");
-+			// nsenter三进程中第二个领盒饭的。			
++			// init的3进程中第2个领盒饭的。			
 +			exit(0);
 		}
 		break;
