@@ -54,7 +54,7 @@ func init() {
 	}
 }
 ```
-注意，上面引入了nsenter包，go语言部分是空的，只有cgo调用init函数
+注意，上面引入了nsenter包。nsensor包里，go语言部分是空的，只有cgo部分。很简单，就init里调用nexec()
 ```
 package nsenter
 
@@ -75,16 +75,17 @@ import "C"
 > 而 go runtime 是多线程的，所以需要在 go runtime 启动前执行 setns() 设置好 namespace，然后再走 go 相关实现流程。
 
 
-在实际的 nsenter 实现中，存在 3 个进程，分别为 parent, child, grandchild。在注释中可以看到 nsenter 实现过程中的考虑：
-来看下 parent，child，grandchild 分别做了哪些事情：
+在实际的 nsenter 实现中，存在3个进程，分别为 parent, child, grandchild。<br>
+注意，这个三个进程是兄弟关系，不是父子关系。<br>
+在注释中可以看到 nsenter 实现过程中的考虑：来看下 parent，child，grandchild 分别做了哪些事情：
 
-> parent
+> parent (runc init 0)
 >> parent 进程通过环境变量 _LIBCONTAINER_INITPIPE 获取相关配置信息，然后 clone 出 child 进程，当 child 进程 ready 之后设置 user map，从 child 进程中接受 grandchild 进程 pid，然后通过管道传递给外层的 runc 进程。parent 进程退出条件为 child 进程和 grandchild 都处于 ready 状态后，parent 进程退出。之所以要 clone child 进程，是因为如果创建了 user namespace，那么 user map 只能由原有的 user namespace 设置，所以需要 clone child 进程，然后在 parent 进程中设置 user map。
 
-> child
+> child (runc init 1)
 >> child 进程先执行 setns()，在一些老版本的kernel 中，CLONE_PARENT flag 与 CLONE_NEWPID 有冲突，所以使用 unshare 创建 user namespace， user namespace 需要先于其他 namespace 创建，创建 user namespace 并设置 user map，才有能力创建其他的 namespace。等待 parent 进程设置 user map 后，设置 child 当前进程的 uid 为 root(0) ，使用 unshare 创建其他 namespace，然后 clone grandchild 进程，并将 grandchild 进程 pid 传递给 parent，然后退出。之所以要 clone grandchild 进程，是因为在 child 进程中设置 namespace 并不会在 child 进程中生效，所以需要 clone 出一个新的进程，继承 namespace 配置。
 
-> grandchild（init）
+> grandchild（runc init 2)
 >> grandchild 进程就是容器真正的进程，在确保 parent 和 child 进程都处于 ready 之后，设置 uid,gid，从管道中读取相应配置信息，然后 unshare 创建 cgroup namespace，然后将状态发送给 parent 后 返回。grandchild 进程返回后继续执行 go 代码流程。
 
 - init -> nsexec
@@ -102,7 +103,7 @@ void nsexec(void)
 	 */
 	setup_logpipe();
 
-+	// initPipe检查有没有设置环境变量_LIBCONTAINER_INITPIPE，如果没有就直接退出了，我们的case在前面已经设置为bootstrap创建的管道的childPipe
++	// initPipe检查有没有设置环境变量_LIBCONTAINER_INITPIPE，如果没有就直接退出了
 	/*
 	 * If we don't have an init pipe, just return to the go routine.
 	 * We'll only get an init pipe for start or exec.
@@ -605,7 +606,7 @@ void nsexec(void)
 ```
 
 ### 讲解几个重要函数
-- clone_parent函数
+- clone_parent函数。利用setjmp和longjmp实现跨函数Goto
 ```
 /* A dummy function that just jumps to the given jumpval. */
 static int child_func(void *arg) __attribute__((noinline));
