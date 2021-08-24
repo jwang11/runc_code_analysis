@@ -400,6 +400,7 @@ void nsexec(void)
 			prctl(PR_SET_NAME, (unsigned long)"runc:[1:CHILD]", 0, 0, 0);
 			write_log(DEBUG, "~> nsexec stage-1");
 
++			// 如果config.json中namespace配置了path，则这里需要将其加入到path指定的namesapce中。k8s的多容器的pod会调用到此处
 			/*
 			 * We need to setns first. We cannot do this earlier (in stage 0)
 			 * because of the fact that we forked to get here (the PID of
@@ -409,6 +410,7 @@ void nsexec(void)
 			if (config.namespaces)
 				join_namespaces(config.namespaces);
 
++			// 如果config.json中设置了user，则创建user namespace
 			/*
 			 * Deal with user namespaces first. They are quite special, as they
 			 * affect our ability to unshare other namespaces and are used as
@@ -496,8 +498,9 @@ void nsexec(void)
 			 * which would break many applications and libraries, so we must fork
 			 * to actually enter the new PID namespace.
 			 */
++			// 创建grand child，也就是init_2
 			write_log(DEBUG, "spawn stage-2");
-			stage2_pid = clone_parent(&env, STAGE_INIT);
++			stage2_pid = clone_parent(&env, STAGE_INIT);
 			if (stage2_pid < 0)
 				bail("unable to spawn stage-2");
 
@@ -532,7 +535,7 @@ void nsexec(void)
 
 			/* Our work is done. [Stage 2: STAGE_INIT] is doing the rest of the work. */
 			write_log(DEBUG, "<~ nsexec stage-1");
-+			// CHILD是nsenter三个进程中第一个领盒饭的
++			// init_1是nsenter的3个进程中第1个领盒饭的
 +			exit(0);
 		}
 		break;
