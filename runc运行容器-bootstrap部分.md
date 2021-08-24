@@ -308,7 +308,7 @@ func startContainer(context *cli.Context, spec *specs.Spec, action CtAct, criuOp
 		logLevel = "debug"
 	}
 +	// 构造runner，包含了前面生成的container和运行需要的配置信息。
-+	// 注意，这里init = true，而如果设runc exec时候，init=false
++	// 注意，这里init=true，而如果runc exec时候，init=false
 +	r := &runner{
 		enableSubreaper: !context.Bool("no-subreaper"),
 		shouldDestroy:   true,
@@ -758,19 +758,23 @@ func (c *linuxContainer) start(process *Process) (retErr error) {
 创建sockPair用于parent和child通信
 ```diff
 func (c *linuxContainer) newParentProcess(p *Process) (parentProcess, error) {
++	// 创建一个unix sockpair(全双工): parentInitPipe留在当前进程， childInitPipe被子进程继承。
++	// runc run和runc init父子进程的bootstrap等数据交换是通过它来完成。
 +	parentInitPipe, childInitPipe, err := utils.NewSockPair("init")
 	if err != nil {
 		return nil, fmt.Errorf("unable to create init pipe: %w", err)
 	}
 +	messageSockPair := filePair{parentInitPipe, childInitPipe}
 
-	parentLogPipe, childLogPipe, err := os.Pipe()
++	// 创建匿名pipe(半双工)。父进程通过匿名pipe来接收子进程日志: 所以将write一端(childLogPipe)封装到cmd中，继承到子进程中。
++	parentLogPipe, childLogPipe, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("unable to create log pipe: %w", err)
 	}
 	logFilePair := filePair{parentLogPipe, childLogPipe}
 
-	cmd := c.commandTemplate(p, childInitPipe, childLogPipe)
++	// 创建runc init子进程的命令行
++	cmd := c.commandTemplate(p, childInitPipe, childLogPipe)
 	if !p.Init {
 		return c.newSetnsProcess(p, cmd, messageSockPair, logFilePair)
 	}
@@ -783,25 +787,71 @@ func (c *linuxContainer) newParentProcess(p *Process) (parentProcess, error) {
 	if err := c.includeExecFifo(cmd); err != nil {
 		return nil, fmt.Errorf("unable to setup exec fifo: %w", err)
 	}
-	return c.newInitProcess(p, cmd, messageSockPair, logFilePair)
++	return c.newInitProcess(p, cmd, messageSockPair, logFilePair)
 }
+```
+- startContainer -> runner.run(spec) ->  r.container.Start -> c.start -> c.newParentProcess -> c.commandTemplate
+```diff
+func (c *linuxContainer) commandTemplate(p *Process, childInitPipe *os.File, childLogPipe *os.File) *exec.Cmd {
+	cmd := exec.Command(c.initPath, c.initArgs[1:]...)
+	cmd.Args[0] = c.initArgs[0]
+	cmd.Stdin = p.Stdin
+	cmd.Stdout = p.Stdout
+	cmd.Stderr = p.Stderr
+	cmd.Dir = c.config.Rootfs
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &unix.SysProcAttr{}
+	}
++	// 通过cmd.Env向子进程设置环境变量
+	cmd.Env = append(cmd.Env, "GOMAXPROCS="+os.Getenv("GOMAXPROCS"))
+	cmd.ExtraFiles = append(cmd.ExtraFiles, p.ExtraFiles...)
+	if p.ConsoleSocket != nil {
+		cmd.ExtraFiles = append(cmd.ExtraFiles, p.ConsoleSocket)
+		cmd.Env = append(cmd.Env,
+			"_LIBCONTAINER_CONSOLE="+strconv.Itoa(stdioFdCount+len(cmd.ExtraFiles)-1),
+		)
+	}
+	cmd.ExtraFiles = append(cmd.ExtraFiles, childInitPipe)
+	cmd.Env = append(cmd.Env,
+		"_LIBCONTAINER_INITPIPE="+strconv.Itoa(stdioFdCount+len(cmd.ExtraFiles)-1),
+		"_LIBCONTAINER_STATEDIR="+c.root,
+	)
+
+	cmd.ExtraFiles = append(cmd.ExtraFiles, childLogPipe)
+	cmd.Env = append(cmd.Env,
+		"_LIBCONTAINER_LOGPIPE="+strconv.Itoa(stdioFdCount+len(cmd.ExtraFiles)-1),
+		"_LIBCONTAINER_LOGLEVEL="+p.LogLevel,
+	)
+
+	// NOTE: when running a container with no PID namespace and the parent process spawning the container is
+	// PID1 the pdeathsig is being delivered to the container's init process by the kernel for some reason
+	// even with the parent still running.
+	if c.config.ParentDeathSignal > 0 {
+		cmd.SysProcAttr.Pdeathsig = unix.Signal(c.config.ParentDeathSignal)
+	}
+	return cmd
+}
+
 ```
 - startContainer -> runner.run(spec) ->  r.container.Start -> c.start -> c.newParentProcess -> c.newInitProcess
 ```diff
 func (c *linuxContainer) newInitProcess(p *Process, cmd *exec.Cmd, messageSockPair, logFilePair filePair) (*initProcess, error) {
-	cmd.Env = append(cmd.Env, "_LIBCONTAINER_INITTYPE="+string(initStandard))
++	// 这里_LIBCONTAINER_INITTYPE=initStandard，后面runc init的时候要用到
++	cmd.Env = append(cmd.Env, "_LIBCONTAINER_INITTYPE="+string(initStandard))
 	nsMaps := make(map[configs.NamespaceType]string)
 	for _, ns := range c.config.Namespaces {
 		if ns.Path != "" {
 			nsMaps[ns.Type] = ns.Path
 		}
 	}
-	_, sharePidns := nsMaps[configs.NEWPID]
-+	// 生成bootstrapData，等待发送给runc init进程
++	// 单独点名PID namespace，nsenter时检查是否share PID
++	_, sharePidns := nsMaps[configs.NEWPID]
++	// 利用nsMaps和CloneFlags生成bootstrapData，等待发送给runc init（0）进程
 +	data, err := c.bootstrapData(c.config.Namespaces.CloneFlags(), nsMaps)
 	if err != nil {
 		return nil, err
 	}
++	// 构造initProcess，其实就是runc init		
 	init := &initProcess{
 		cmd:             cmd,
 		messageSockPair: messageSockPair,
@@ -818,6 +868,103 @@ func (c *linuxContainer) newInitProcess(p *Process, cmd *exec.Cmd, messageSockPa
 	return init, nil
 }
 ```
+
+- `bootscrapData`
+```diff
+// bootstrapData encodes the necessary data in netlink binary format
+// as a io.Reader.
+// Consumer can write the data to a bootstrap program
+// such as one that uses nsenter package to bootstrap the container's
+// init process correctly, i.e. with correct namespaces, uid/gid
+// mapping etc.
+func (c *linuxContainer) bootstrapData(cloneFlags uintptr, nsMaps map[configs.NamespaceType]string) (io.Reader, error) {
++	// 创建netlink格式的message
+	// create the netlink message
+	r := nl.NewNetlinkRequest(int(InitMsg), 0)
+
++	// CLONE_FLAGS
+	// write cloneFlags
+	r.AddData(&Int32msg{
+		Type:  CloneFlagsAttr,
+		Value: uint32(cloneFlags),
+	})
+
+	// write custom namespace paths
+	if len(nsMaps) > 0 {
+		nsPaths, err := c.orderNamespacePaths(nsMaps)
+		if err != nil {
+			return nil, err
+		}
+		r.AddData(&Bytemsg{
+			Type:  NsPathsAttr,
+			Value: []byte(strings.Join(nsPaths, ",")),
+		})
+	}
+
+	// write namespace paths only when we are not joining an existing user ns
+	_, joinExistingUser := nsMaps[configs.NEWUSER]
+	if !joinExistingUser {
+		// write uid mappings
+		if len(c.config.UidMappings) > 0 {
+			if c.config.RootlessEUID && c.newuidmapPath != "" {
+				r.AddData(&Bytemsg{
+					Type:  UidmapPathAttr,
+					Value: []byte(c.newuidmapPath),
+				})
+			}
+			b, err := encodeIDMapping(c.config.UidMappings)
+			if err != nil {
+				return nil, err
+			}
+			r.AddData(&Bytemsg{
+				Type:  UidmapAttr,
+				Value: b,
+			})
+		}
+
+		// write gid mappings
+		if len(c.config.GidMappings) > 0 {
+			b, err := encodeIDMapping(c.config.GidMappings)
+			if err != nil {
+				return nil, err
+			}
+			r.AddData(&Bytemsg{
+				Type:  GidmapAttr,
+				Value: b,
+			})
+			if c.config.RootlessEUID && c.newgidmapPath != "" {
+				r.AddData(&Bytemsg{
+					Type:  GidmapPathAttr,
+					Value: []byte(c.newgidmapPath),
+				})
+			}
+			if requiresRootOrMappingTool(c.config) {
+				r.AddData(&Boolmsg{
+					Type:  SetgroupAttr,
+					Value: true,
+				})
+			}
+		}
+	}
+
+	if c.config.OomScoreAdj != nil {
+		// write oom_score_adj
+		r.AddData(&Bytemsg{
+			Type:  OomScoreAdjAttr,
+			Value: []byte(strconv.Itoa(*c.config.OomScoreAdj)),
+		})
+	}
+
+	// write rootless
+	r.AddData(&Boolmsg{
+		Type:  RootlessEUIDAttr,
+		Value: c.config.RootlessEUID,
+	})
+
+	return bytes.NewReader(r.Serialize()), nil
+}
+```
+
 - startContainer -> runner.run(spec) ->  r.container.Start -> c.start -> parent.start
 > 当前的bootstrap进程启动了cmd，即启动了runc init 命令，创建 runc init 进程。 
 > runc init激活了C代码nsenter模块的执行。nsenter模块clone 了三个进程parent、child、init，用来配置namespace
