@@ -1,9 +1,8 @@
 # runc 运行容器
-> 命令行运行：$runc run image
 > runc运行container的实现分为两个大阶段:
->> 第一个阶段叫bootstrap, 设置一些环境以及配置信息, 创建匿名管道， 把容器的配置信息通过管道发送给第二阶段。
+>> 第一个阶段叫bootstrap, 由命令`runc run/create`发起，设置一些环境以及配置信息, 创建匿名管道，把容器的配置信息通过管道发送给第二阶段。
 >> 
->> 第二个阶段叫init， 主要就是创建子进程并根据管道传过来的配置信息，设置进程的namespace。
+>> 第二个阶段叫init，由第一阶段fork的子进程`runc init`, 主要就是创建子进程并根据管道传过来的配置信息，设置进程的namespace。
 
 ![工作流程图](runc_nsenter_timeline.png) 
 ### [代码入口](https://github.com/opencontainers/runc/blob/master/run.go)
