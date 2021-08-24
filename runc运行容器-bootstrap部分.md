@@ -5,7 +5,7 @@
 > 第二个阶段叫init， 主要就是创建子进程并根据管道传过来的配置信息，设置进程的namespace信息。
 
 
-### 命令[代码入口](https://github.com/opencontainers/runc/blob/master/run.go)
+### [代码入口](https://github.com/opencontainers/runc/blob/master/run.go)
 ```diff
 // default action is to start a container
 var runCommand = cli.Command{
@@ -66,10 +66,12 @@ command(s) that get executed on start, edit the args parameter of the spec. See
 		if err := revisePidFile(context); err != nil {
 			return err
 		}
-		spec, err := setupSpec(context)
++		// 解析bundle目录下的config.json配置。
++		spec, err := setupSpec(context)
 		if err != nil {
 			return err
 		}
++		// runc run的主函数，action flag=CT_ACT_RUN，如果是runc create，action=CT_ACT_CREATE
 +		status, err := startContainer(context, spec, CT_ACT_RUN, nil)
 		if err == nil {
 			// exit with the container's exit status so any external supervisor is
@@ -264,7 +266,7 @@ command(s) that get executed on start, edit the args parameter of the spec. See
 }
 ```
 
-- [startContainer] 
+- [startContainer]（https://github.com/opencontainers/runc/blob/34df203d131cea5973f4bbb37a4050bcc6af2d29/utils_linux.go#L400） 
 ```diff
 func startContainer(context *cli.Context, spec *specs.Spec, action CtAct, criuOpts *libcontainer.CriuOpts) (int, error) {
 	id := context.Args().First()
@@ -305,8 +307,9 @@ func startContainer(context *cli.Context, spec *specs.Spec, action CtAct, criuOp
 	if context.GlobalBool("debug") {
 		logLevel = "debug"
 	}
-
-	r := &runner{
++	// 构造runner，包含了前面生成的container和运行需要的配置信息。
++	// 注意，这里init = true，而如果设runc exec时候，init=false
++	r := &runner{
 		enableSubreaper: !context.Bool("no-subreaper"),
 		shouldDestroy:   true,
 		container:       container,
@@ -353,7 +356,7 @@ func createContainer(context *cli.Context, id string, spec *specs.Spec) (libcont
 }
 ```
 
-- startContainer -> createContainer -> loadFactory. 创建平台相关的factory，如linux factory
+- startContainer -> createContainer -> loadFactory. 创建平台相关的工厂，如linux factory
 ```diff
 func loadFactory(context *cli.Context) (libcontainer.Factory, error) {
 	root := context.GlobalString("root")
@@ -471,7 +474,7 @@ type LinuxFactory struct {
 }
 
 ```
-- startContainer -> createContainer -> loadFactory -> New -> Factory.Create. 生成linuxContainer结构
+- startContainer -> createContainer -> Factory.Create. 生成linuxContainer结构，包含了平台相关的配置信息
 ```diff
 func (l *LinuxFactory) Create(id string, config *configs.Config) (Container, error) {
 	if l.Root == "" {
@@ -545,6 +548,7 @@ func (r *runner) run(config *specs.Process) (int, error) {
 	if err = r.checkTerminal(config); err != nil {
 		return -1, err
 	}
++	// 根据OCI，创建在container里运行的process结构	
 +	process, err := newProcess(*config, r.init, r.logLevel)
 	if err != nil {
 		return -1, err
@@ -581,12 +585,14 @@ func (r *runner) run(config *specs.Process) (int, error) {
 	defer tty.Close()
 
 	switch r.action {
-	case CT_ACT_CREATE:
++	// runc create走这条路
++	case CT_ACT_CREATE:
 +		err = r.container.Start(process)
 	case CT_ACT_RESTORE:
 		err = r.container.Restore(process, r.criuOpts)
-	case CT_ACT_RUN:
-		err = r.container.Run(process)
++	// runc run走这条路		
++	case CT_ACT_RUN:
++		err = r.container.Run(process)
 	default:
 		panic("Unknown action")
 	}
@@ -626,7 +632,9 @@ func (r *runner) run(config *specs.Process) (int, error) {
 // spec and stdio from the current process.
 func newProcess(p specs.Process, init bool, logLevel string) (*libcontainer.Process, error) {
 +	lp := &libcontainer.Process{
++		// container的入口命令（entrypoint）
 		Args: p.Args,
+		// container的环境变量2
 		Env:  p.Env,
 		// TODO: fix libcontainer's API to better support uid/gid in a typesafe way.
 		User:            fmt.Sprintf("%d:%d", p.User.UID, p.User.GID),
@@ -634,6 +642,7 @@ func newProcess(p specs.Process, init bool, logLevel string) (*libcontainer.Proc
 		Label:           p.SelinuxLabel,
 		NoNewPrivileges: &p.NoNewPrivileges,
 		AppArmorProfile: p.ApparmorProfile,
++		// runner里的init值传给了Process.Init
 		Init:            init,
 		LogLevel:        logLevel,
 	}
@@ -665,21 +674,33 @@ func newProcess(p specs.Process, init bool, logLevel string) (*libcontainer.Proc
 }
 ```
 
-- startContainer -> runner.run(spec) ->  r.container.Start
+- startContainer -> runner.run(spec) ->  r.container.Run.
 ```diff
+func (c *linuxContainer) Run(process *Process) error {
+	if err := c.Start(process); err != nil {
+		return err
+	}
++	// 如果是runc run，process.Init=true
+	if process.Init {
+		return c.exec()
+	}
+	return nil
+}
+
 func (c *linuxContainer) Start(process *Process) error {
 	c.m.Lock()
 	defer c.m.Unlock()
 	if c.config.Cgroups.Resources.SkipDevices {
 		return &ConfigError{"can't start container with SkipDevices set"}
 	}
-+	// 如果是第一次create，创建execFifo	
++	// 如果是第一次创建容器（如runc run/create），先创建execFifo（/run/runc/mycontainer/exec.fifo），这是在container里面执行命令的通道。
++	// fifo特点是读写两端不同时存在时会堵塞，以此来实现暂停效果，如等待run exec执行命令。	
 	if process.Init {
 		if err := c.createExecFifo(); err != nil {
 			return err
 		}
 	}
-	if err := c.start(process); err != nil {
++	if err := c.start(process); err != nil {
 		if process.Init {
 			c.deleteExecFifo()
 		}
@@ -689,7 +710,7 @@ func (c *linuxContainer) Start(process *Process) error {
 }
 ```
 
-- startContainer -> runner.run(spec) ->  r.container.Start -> c.start
+- startContainer -> runner.run(spec) -> r.container.Start -> c.start
 ```diff
 func (c *linuxContainer) start(process *Process) (retErr error) {
 +	parent, err := c.newParentProcess(process)
@@ -720,7 +741,7 @@ func (c *linuxContainer) start(process *Process) (retErr error) {
 			if err != nil {
 				return err
 			}
-
++			// 如果bundle下的config.json中配置了hooks, 则执行poststart这个hook点挂载的处理函数。
 			if err := c.config.Hooks[configs.Poststart].RunHooks(s); err != nil {
 				if err := ignoreTerminateErrors(parent.terminate()); err != nil {
 					logrus.Warn(fmt.Errorf("error running poststart hook: %w", err))
