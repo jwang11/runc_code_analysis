@@ -408,7 +408,7 @@ void nsexec(void)
 			 * using cmsg(3) but that's just annoying.
 			 */
 			if (config.namespaces)
-				join_namespaces(config.namespaces);
++				join_namespaces(config.namespaces);
 
 +			// 如果config.json中设置了user，则创建user namespace
 			/*
@@ -583,7 +583,7 @@ void nsexec(void)
 				if (setgroups(0, NULL) < 0)
 					bail("setgroups failed");
 			}
-
++			// 设置CGroup namespace，从pipe中读取一个字节值为0x80
 			if (config.cloneflags & CLONE_NEWCGROUP) {
 				if (unshare(CLONE_NEWCGROUP) < 0)
 					bail("failed to unshare cgroup namespace");
