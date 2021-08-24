@@ -980,7 +980,7 @@ func (c *linuxContainer) bootstrapData(cloneFlags uintptr, nsMaps map[configs.Na
 > 当前的bootstrap进程启动了cmd，即启动了runc init 命令，创建 runc init 进程。 
 > runc init激活了C代码nsenter模块的执行。nsenter模块clone 了三个进程parent、child、init，用来配置namespace
 > nsenter结束后，继续go代码执行，为容器初始化其它部分(网络、rootfs、路由、主机名、console、安全等)
-```
+```diff
 type initProcess struct {
 	cmd             *exec.Cmd
 	messageSockPair filePair
@@ -1103,7 +1103,7 @@ func (p *initProcess) start() (retErr error) {
 		sentRun    bool
 		sentResume bool
 	)
-
++	// 等待子进程发送的同步数据。
 	ierr := parseSync(p.messageSockPair.parent, func(sync *syncT) error {
 		switch sync.Type {
 		case procReady:
