@@ -435,24 +435,7 @@ type LinuxFactory struct {
 - startContainer -> createContainer -> Factory.Create. 生成linuxContainer结构，包含了平台相关的配置信息
 ```diff
 func (l *LinuxFactory) Create(id string, config *configs.Config) (Container, error) {
-	if l.Root == "" {
-		return nil, &ConfigError{"invalid root"}
-	}
-	if err := l.validateID(id); err != nil {
-		return nil, err
-	}
-	if err := l.Validator.Validate(config); err != nil {
-		return nil, &ConfigError{err.Error()}
-	}
-	containerRoot, err := securejoin.SecureJoin(l.Root, id)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := os.Stat(containerRoot); err == nil {
-		return nil, ErrExist
-	} else if !os.IsNotExist(err) {
-		return nil, err
-	}
+...
 	if err := os.MkdirAll(containerRoot, 0o711); err != nil {
 		return nil, err
 	}
@@ -470,9 +453,8 @@ func (l *LinuxFactory) Create(id string, config *configs.Config) (Container, err
 		newgidmapPath: l.NewgidmapPath,
 		cgroupManager: l.NewCgroupsManager(config.Cgroups, nil),
 	}
-	if l.NewIntelRdtManager != nil {
-		c.intelRdtManager = l.NewIntelRdtManager(config, id, "")
-	}
+
+-	// container的初始状态
 	c.state = &stoppedState{c: c}
 	return c, nil
 }
