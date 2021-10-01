@@ -853,7 +853,7 @@ func (p *initProcess) start() (retErr error) {
 	fds, err := getPipeFds(childPid)
 	p.setExternalDescriptors(fds)
 
-+	// 等待runc init(0)退出
+-	// 等待runc init(0)退出
 	// Wait for our first child to exit
 	if err := p.waitForChildExit(childPid); err != nil {
 		return fmt.Errorf("error waiting for our first child to exit: %w", err)
