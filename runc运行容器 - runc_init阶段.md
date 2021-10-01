@@ -269,16 +269,6 @@ void nsexec(void)
 				case SYNC_USERMAP_PLS:
 					write_log(DEBUG, "stage-1 requested userns mappings");
 
-					/*
-					 * Enable setgroups(2) if we've been asked to. But we also
-					 * have to explicitly disable setgroups(2) if we're
-					 * creating a rootless container for single-entry mapping.
-					 * i.e. config.is_setgroup == false.
-					 * (this is required since Linux 3.19).
-					 *
-					 * For rootless multi-entry mapping, config.is_setgroup shall be true and
-					 * newuidmap/newgidmap shall be used.
-					 */
 					if (config.is_rootless_euid && !config.is_setgroup)
 						update_setgroups(stage1_pid, SETGROUPS_DENY);
 
@@ -313,23 +303,11 @@ void nsexec(void)
 					}
 
 -					// 把init_1和init_2的PID都发给runc_create
-					/*
-					 * Send both the stage-1 and stage-2 pids back to runc.
-					 * runc needs the stage-2 to continue process management,
-					 * but because stage-1 was spawned with CLONE_PARENT we
-					 * cannot reap it within stage-0 and thus we need to ask
-					 * runc to reap the zombie for us.
-					 */
 					write_log(DEBUG, "forward stage-1 (%d) and stage-2 (%d) pids to runc",
 						  stage1_pid, stage2_pid);
 					len =
 					    dprintf(pipenum, "{\"stage1_pid\":%d,\"stage2_pid\":%d}\n", stage1_pid,
 						    stage2_pid);
-					if (len < 0) {
-						sane_kill(stage1_pid, SIGKILL);
-						sane_kill(stage2_pid, SIGKILL);
-						bail("failed to sync with runc: write(pid-JSON)");
-					}
 					break;
 				case SYNC_CHILD_FINISH:
 					write_log(DEBUG, "stage-1 complete");
