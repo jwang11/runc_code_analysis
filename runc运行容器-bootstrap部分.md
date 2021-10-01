@@ -582,11 +582,7 @@ func (c *linuxContainer) Run(process *Process) error {
 }
 
 func (c *linuxContainer) Start(process *Process) error {
-	c.m.Lock()
-	defer c.m.Unlock()
-	if c.config.Cgroups.Resources.SkipDevices {
-		return &ConfigError{"can't start container with SkipDevices set"}
-	}
+...
 -	// 如果是第一次创建容器（如runc run/create），先创建execFifo（/run/runc/mycontainer/exec.fifo），这是在container里面执行命令的通道。
 -	// fifo特点是读写两端不同时存在时会堵塞，以此来实现暂停效果，如等待run exec执行命令。	
 	if process.Init {
@@ -608,41 +604,13 @@ func (c *linuxContainer) Start(process *Process) error {
 ```diff
 func (c *linuxContainer) start(process *Process) (retErr error) {
 +	parent, err := c.newParentProcess(process)
-	if err != nil {
-		return fmt.Errorf("unable to create new parent process: %w", err)
-	}
-
-	logsDone := parent.forwardChildLogs()
-	if logsDone != nil {
-		defer func() {
-			// Wait for log forwarder to finish. This depends on
-			// runc init closing the _LIBCONTAINER_LOGPIPE log fd.
-			err := <-logsDone
-			if err != nil && retErr == nil {
-				retErr = fmt.Errorf("unable to forward init logs: %w", err)
-			}
-		}()
-	}
-
 +	if err := parent.start(); err != nil {
 		return fmt.Errorf("unable to start container process: %w", err)
 	}
 
 	if process.Init {
 		c.fifo.Close()
-		if c.config.Hooks != nil {
-			s, err := c.currentOCIState()
-			if err != nil {
-				return err
-			}
--			// 如果bundle下的config.json中配置了hooks, 则执行poststart这个hook点挂载的处理函数。
-			if err := c.config.Hooks[configs.Poststart].RunHooks(s); err != nil {
-				if err := ignoreTerminateErrors(parent.terminate()); err != nil {
-					logrus.Warn(fmt.Errorf("error running poststart hook: %w", err))
-				}
-				return err
-			}
-		}
+		...
 	}
 	return nil
 }
