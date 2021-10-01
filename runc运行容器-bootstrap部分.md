@@ -559,9 +559,6 @@ func newProcess(p specs.Process, init bool, logLevel string) (*libcontainer.Proc
 	}
 	for _, rlimit := range p.Rlimits {
 		rl, err := createLibContainerRlimit(rlimit)
-		if err != nil {
-			return nil, err
-		}
 		lp.Rlimits = append(lp.Rlimits, rl)
 	}
 	return lp, nil
@@ -576,14 +573,13 @@ func (c *linuxContainer) Run(process *Process) error {
 	}
 -	// 如果是runc run，process.Init=true
 	if process.Init {
-		return c.exec()
-	}
-	return nil
+		return c.exec() ...
 }
 
 func (c *linuxContainer) Start(process *Process) error {
 ...
--	// 如果是第一次创建容器（如runc run/create），先创建execFifo（/run/runc/mycontainer/exec.fifo），这是在container里面执行命令的通道。
+-	// 如果是第一次创建容器（如runc run/create），先创建
+-	// execFifo（/run/runc/mycontainer/exec.fifo），这是在container里面执行命令的通道。
 -	// fifo特点是读写两端不同时存在时会堵塞，以此来实现暂停效果，如等待run exec执行命令。	
 	if process.Init {
 		if err := c.createExecFifo(); err != nil {
@@ -593,10 +589,7 @@ func (c *linuxContainer) Start(process *Process) error {
 +	if err := c.start(process); err != nil {
 		if process.Init {
 			c.deleteExecFifo()
-		}
-		return err
-	}
-	return nil
+		} ...
 }
 ```
 
@@ -611,9 +604,7 @@ func (c *linuxContainer) start(process *Process) (retErr error) {
 	if process.Init {
 		c.fifo.Close()
 		...
-	}
-	return nil
-}
+	} ...
 ```
 
 - startContainer -> runner.run(spec) ->  r.container.Start -> c.start -> c.newParentProcess
@@ -630,22 +621,10 @@ func (c *linuxContainer) newParentProcess(p *Process) (parentProcess, error) {
 
 -	// 创建匿名pipe(半双工)。父进程通过匿名pipe来接收子进程日志: 所以将write一端(childLogPipe)封装到cmd中，继承到子进程中。
 	parentLogPipe, childLogPipe, err := os.Pipe()
-	if err != nil {
-		return nil, fmt.Errorf("unable to create log pipe: %w", err)
-	}
 	logFilePair := filePair{parentLogPipe, childLogPipe}
 
 -	// 创建runc init子进程的命令行
 	cmd := c.commandTemplate(p, childInitPipe, childLogPipe)
-	if !p.Init {
-		return c.newSetnsProcess(p, cmd, messageSockPair, logFilePair)
-	}
-
-	// We only set up fifoFd if we're not doing a `runc exec`. The historic
-	// reason for this is that previously we would pass a dirfd that allowed
-	// for container rootfs escape (and not doing it in `runc exec` avoided
-	// that problem), but we no longer do that. However, there's no need to do
-	// this for `runc exec` so we just keep it this way to be safe.
 	if err := c.includeExecFifo(cmd); err != nil {
 		return nil, fmt.Errorf("unable to setup exec fifo: %w", err)
 	}
