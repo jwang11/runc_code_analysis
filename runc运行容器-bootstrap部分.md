@@ -66,13 +66,13 @@ command(s) that get executed on start, edit the args parameter of the spec. See
 		if err := revisePidFile(context); err != nil {
 			return err
 		}
-+		// 解析bundle目录下的config.json配置。
-+		spec, err := setupSpec(context)
+-		// 解析bundle目录下的config.json配置。
+		spec, err := setupSpec(context)
 		if err != nil {
 			return err
 		}
-+		// runc run的主函数，action flag=CT_ACT_RUN，如果是runc create，action=CT_ACT_CREATE
-+		status, err := startContainer(context, spec, CT_ACT_RUN, nil)
+-		// runc run的主函数，action flag=CT_ACT_RUN，如果是runc create，action=CT_ACT_CREATE
+		status, err := startContainer(context, spec, CT_ACT_RUN, nil)
 		if err == nil {
 			// exit with the container's exit status so any external supervisor is
 			// notified of the exit with the correct exit status.
@@ -266,7 +266,7 @@ command(s) that get executed on start, edit the args parameter of the spec. See
 }
 ```
 
-- [startContainer]（https://github.com/opencontainers/runc/blob/34df203d131cea5973f4bbb37a4050bcc6af2d29/utils_linux.go#L400） 
+- [startContainer]（https://github.com/opencontainers/runc/blob/master/utils_linux.go#L400） 
 ```diff
 func startContainer(context *cli.Context, spec *specs.Spec, action CtAct, criuOpts *libcontainer.CriuOpts) (int, error) {
 	id := context.Args().First()
@@ -418,7 +418,7 @@ func New(root string, options ...func(*LinuxFactory) error) (Factory, error) {
 	}
 	l := &LinuxFactory{
 		Root:      root,
-+		// 构成了runc init命令
+-		// 构成了runc init命令
 +		InitPath:  "/proc/self/exe",
 +		InitArgs:  []string{os.Args[0], "init"},
 		Validator: validate.New(),
@@ -453,10 +453,10 @@ type LinuxFactory struct {
 	// a container.
 	InitArgs []string
 
-+	// Linux用户检查点/恢复项目( Linux Checkpoint/Restore In Userspace，CRIU)
-+	// CriuPath is the path to the criu binary used for checkpoint and restore of
-+	// containers.
-+	CriuPath string
+-	// Linux用户检查点/恢复项目( Linux Checkpoint/Restore In Userspace，CRIU)
+	// CriuPath is the path to the criu binary used for checkpoint and restore of
+	// containers.
+	CriuPath string
 
 	// New{u,g}idmapPath is the path to the binaries used for mapping with
 	// rootless containers.
@@ -549,7 +549,7 @@ func (r *runner) run(config *specs.Process) (int, error) {
 		return -1, err
 	}
 +	// 根据OCI，创建在container里运行的process结构	
-+	process, err := newProcess(*config, r.init, r.logLevel)
+	process, err := newProcess(*config, r.init, r.logLevel)
 	if err != nil {
 		return -1, err
 	}
@@ -585,14 +585,14 @@ func (r *runner) run(config *specs.Process) (int, error) {
 	defer tty.Close()
 
 	switch r.action {
-+	// runc create走这条路
-+	case CT_ACT_CREATE:
-+		err = r.container.Start(process)
+-	// runc create走这条路
+	case CT_ACT_CREATE:
+		err = r.container.Start(process)
 	case CT_ACT_RESTORE:
 		err = r.container.Restore(process, r.criuOpts)
-+	// runc run走这条路		
-+	case CT_ACT_RUN:
-+		err = r.container.Run(process)
+-	// runc run走这条路		
+	case CT_ACT_RUN:
+		err = r.container.Run(process)
 	default:
 		panic("Unknown action")
 	}
@@ -631,10 +631,10 @@ func (r *runner) run(config *specs.Process) (int, error) {
 // newProcess returns a new libcontainer Process with the arguments from the
 // spec and stdio from the current process.
 func newProcess(p specs.Process, init bool, logLevel string) (*libcontainer.Process, error) {
-+	lp := &libcontainer.Process{
-+		// container的入口命令（entrypoint）
+	lp := &libcontainer.Process{
+-		// container的入口命令（entrypoint）
 		Args: p.Args,
-		// container的环境变量2
+		// container的环境变量
 		Env:  p.Env,
 		// TODO: fix libcontainer's API to better support uid/gid in a typesafe way.
 		User:            fmt.Sprintf("%d:%d", p.User.UID, p.User.GID),
@@ -642,7 +642,7 @@ func newProcess(p specs.Process, init bool, logLevel string) (*libcontainer.Proc
 		Label:           p.SelinuxLabel,
 		NoNewPrivileges: &p.NoNewPrivileges,
 		AppArmorProfile: p.ApparmorProfile,
-+		// runner里的init值传给了Process.Init
+-		// runner里的init值传给了Process.Init
 		Init:            init,
 		LogLevel:        logLevel,
 	}
@@ -680,7 +680,7 @@ func (c *linuxContainer) Run(process *Process) error {
 	if err := c.Start(process); err != nil {
 		return err
 	}
-+	// 如果是runc run，process.Init=true
+-	// 如果是runc run，process.Init=true
 	if process.Init {
 		return c.exec()
 	}
@@ -693,8 +693,8 @@ func (c *linuxContainer) Start(process *Process) error {
 	if c.config.Cgroups.Resources.SkipDevices {
 		return &ConfigError{"can't start container with SkipDevices set"}
 	}
-+	// 如果是第一次创建容器（如runc run/create），先创建execFifo（/run/runc/mycontainer/exec.fifo），这是在container里面执行命令的通道。
-+	// fifo特点是读写两端不同时存在时会堵塞，以此来实现暂停效果，如等待run exec执行命令。	
+-	// 如果是第一次创建容器（如runc run/create），先创建execFifo（/run/runc/mycontainer/exec.fifo），这是在container里面执行命令的通道。
+-	// fifo特点是读写两端不同时存在时会堵塞，以此来实现暂停效果，如等待run exec执行命令。	
 	if process.Init {
 		if err := c.createExecFifo(); err != nil {
 			return err
@@ -741,7 +741,7 @@ func (c *linuxContainer) start(process *Process) (retErr error) {
 			if err != nil {
 				return err
 			}
-+			// 如果bundle下的config.json中配置了hooks, 则执行poststart这个hook点挂载的处理函数。
+-			// 如果bundle下的config.json中配置了hooks, 则执行poststart这个hook点挂载的处理函数。
 			if err := c.config.Hooks[configs.Poststart].RunHooks(s); err != nil {
 				if err := ignoreTerminateErrors(parent.terminate()); err != nil {
 					logrus.Warn(fmt.Errorf("error running poststart hook: %w", err))
@@ -758,23 +758,23 @@ func (c *linuxContainer) start(process *Process) (retErr error) {
 创建sockPair用于parent和child通信
 ```diff
 func (c *linuxContainer) newParentProcess(p *Process) (parentProcess, error) {
-+	// 创建一个unix sockpair(全双工): parentInitPipe留在当前进程， childInitPipe被子进程继承。
-+	// runc run和runc init父子进程的bootstrap等数据交换是通过它来完成。
-+	parentInitPipe, childInitPipe, err := utils.NewSockPair("init")
+-	// 创建一个unix sockpair(全双工): parentInitPipe留在当前进程， childInitPipe被子进程继承。
+-	// runc run和runc init父子进程的bootstrap等数据交换是通过它来完成。
+	parentInitPipe, childInitPipe, err := utils.NewSockPair("init")
 	if err != nil {
 		return nil, fmt.Errorf("unable to create init pipe: %w", err)
 	}
 +	messageSockPair := filePair{parentInitPipe, childInitPipe}
 
-+	// 创建匿名pipe(半双工)。父进程通过匿名pipe来接收子进程日志: 所以将write一端(childLogPipe)封装到cmd中，继承到子进程中。
-+	parentLogPipe, childLogPipe, err := os.Pipe()
+-	// 创建匿名pipe(半双工)。父进程通过匿名pipe来接收子进程日志: 所以将write一端(childLogPipe)封装到cmd中，继承到子进程中。
+	parentLogPipe, childLogPipe, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("unable to create log pipe: %w", err)
 	}
 	logFilePair := filePair{parentLogPipe, childLogPipe}
 
-+	// 创建runc init子进程的命令行
-+	cmd := c.commandTemplate(p, childInitPipe, childLogPipe)
+-	// 创建runc init子进程的命令行
+	cmd := c.commandTemplate(p, childInitPipe, childLogPipe)
 	if !p.Init {
 		return c.newSetnsProcess(p, cmd, messageSockPair, logFilePair)
 	}
@@ -802,7 +802,7 @@ func (c *linuxContainer) commandTemplate(p *Process, childInitPipe *os.File, chi
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &unix.SysProcAttr{}
 	}
-+	// 通过cmd.Env向子进程设置环境变量
+-	// 通过cmd.Env向子进程设置环境变量
 	cmd.Env = append(cmd.Env, "GOMAXPROCS="+os.Getenv("GOMAXPROCS"))
 	cmd.ExtraFiles = append(cmd.ExtraFiles, p.ExtraFiles...)
 	if p.ConsoleSocket != nil {
@@ -836,22 +836,22 @@ func (c *linuxContainer) commandTemplate(p *Process, childInitPipe *os.File, chi
 - startContainer -> runner.run(spec) ->  r.container.Start -> c.start -> c.newParentProcess -> c.newInitProcess
 ```diff
 func (c *linuxContainer) newInitProcess(p *Process, cmd *exec.Cmd, messageSockPair, logFilePair filePair) (*initProcess, error) {
-+	// 这里_LIBCONTAINER_INITTYPE=initStandard，后面runc init的时候要用到
-+	cmd.Env = append(cmd.Env, "_LIBCONTAINER_INITTYPE="+string(initStandard))
+-	// 这里_LIBCONTAINER_INITTYPE=initStandard，后面runc init的时候要用到
+	cmd.Env = append(cmd.Env, "_LIBCONTAINER_INITTYPE="+string(initStandard))
 	nsMaps := make(map[configs.NamespaceType]string)
 	for _, ns := range c.config.Namespaces {
 		if ns.Path != "" {
 			nsMaps[ns.Type] = ns.Path
 		}
 	}
-+	// 单独点名PID namespace，nsenter时检查是否share PID
-+	_, sharePidns := nsMaps[configs.NEWPID]
-+	// 利用nsMaps和CloneFlags生成bootstrapData，等待发送给runc init（0）进程
-+	data, err := c.bootstrapData(c.config.Namespaces.CloneFlags(), nsMaps)
+-	// 单独点名PID namespace，nsenter时检查是否share PID
+	_, sharePidns := nsMaps[configs.NEWPID]
+-	// 利用nsMaps和CloneFlags生成bootstrapData，等待发送给runc init（0）进程
+	data, err := c.bootstrapData(c.config.Namespaces.CloneFlags(), nsMaps)
 	if err != nil {
 		return nil, err
 	}
-+	// 构造initProcess，其实就是runc init		
+-	// 构造initProcess，其实就是runc init		
 	init := &initProcess{
 		cmd:             cmd,
 		messageSockPair: messageSockPair,
@@ -889,11 +889,11 @@ _LIBCONTAINER_INITTYPE | * | 值为standard或setns。如果为standard，则从
 // init process correctly, i.e. with correct namespaces, uid/gid
 // mapping etc.
 func (c *linuxContainer) bootstrapData(cloneFlags uintptr, nsMaps map[configs.NamespaceType]string) (io.Reader, error) {
-+	// 创建netlink格式的message
+-	// 创建netlink格式的message
 	// create the netlink message
 	r := nl.NewNetlinkRequest(int(InitMsg), 0)
 
-+	// CLONE_FLAGS
+-	// CLONE_FLAGS
 	// write cloneFlags
 	r.AddData(&Int32msg{
 		Type:  CloneFlagsAttr,
@@ -997,8 +997,8 @@ type initProcess struct {
 
 func (p *initProcess) start() (retErr error) {
 	defer p.messageSockPair.parent.Close() //nolint: errcheck
-+	// 启动runc init命令
-+	err := p.cmd.Start()
+-	// 启动runc init命令
+	err := p.cmd.Start()
 	p.process.ops = p
 	// close the write-side of the pipes (controlled by child)
 	_ = p.messageSockPair.child.Close()
@@ -1059,8 +1059,8 @@ func (p *initProcess) start() (retErr error) {
 			return fmt.Errorf("unable to apply Intel RDT configuration: %w", err)
 		}
 	}
-+	// 写bootstrapData
-+	if _, err := io.Copy(p.messageSockPair.parent, p.bootstrapData); err != nil {
+-	// 写bootstrapData
+	if _, err := io.Copy(p.messageSockPair.parent, p.bootstrapData); err != nil {
 		return fmt.Errorf("can't copy bootstrap data to pipe: %w", err)
 	}
 	err = <-waitInit
@@ -1068,8 +1068,8 @@ func (p *initProcess) start() (retErr error) {
 		return err
 	}
 
-+	// 获取runc init(2)的PID
-+	childPid, err := p.getChildPid()
+-	// 获取runc init(2)的PID
+	childPid, err := p.getChildPid()
 	if err != nil {
 		return fmt.Errorf("can't get final child's PID from pipe: %w", err)
 	}
@@ -1088,14 +1088,14 @@ func (p *initProcess) start() (retErr error) {
 	if err := p.waitForChildExit(childPid); err != nil {
 		return fmt.Errorf("error waiting for our first child to exit: %w", err)
 	}
-+	// 开始创建网卡。这里只是将loopback设置为up.
+-	// 开始创建网卡。这里只是将loopback设置为up.
 	if err := p.createNetworkInterfaces(); err != nil {
 		return fmt.Errorf("error creating network interfaces: %w", err)
 	}
 	if err := p.updateSpecState(); err != nil {
 		return fmt.Errorf("error updating spec state: %w", err)
 	}
-+	// 向 runc init 子进程发送配置
+-	// 向 runc init 子进程发送配置
 	if err := p.sendConfig(); err != nil {
 		return fmt.Errorf("error sending config to init process: %w", err)
 	}
@@ -1103,7 +1103,7 @@ func (p *initProcess) start() (retErr error) {
 		sentRun    bool
 		sentResume bool
 	)
-+	// 等待子进程发送的同步数据。
+-	// 等待子进程发送的同步数据。
 	ierr := parseSync(p.messageSockPair.parent, func(sync *syncT) error {
 		switch sync.Type {
 		case procReady:
