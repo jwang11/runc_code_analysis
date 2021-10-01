@@ -335,7 +335,6 @@ func createContainer(context *cli.Context, id string, spec *specs.Spec) (libcont
 	})
 
 +	factory, err := loadFactory(context)
-
 +	return factory.Create(id, config)
 }
 ```
@@ -350,9 +349,6 @@ func loadFactory(context *cli.Context) (libcontainer.Factory, error) {
 	// systemd box.
 	cgroupManager := libcontainer.Cgroupfs
 	if context.GlobalBool("systemd-cgroup") {
-		if !systemd.IsRunningSystemd() {
-			return nil, errors.New("systemd cgroup flag passed, but systemd support for managing cgroups is not available")
-		}
 		cgroupManager = libcontainer.SystemdCgroups
 	}
 
