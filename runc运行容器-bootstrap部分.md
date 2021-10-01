@@ -323,7 +323,6 @@ func startContainer(context *cli.Context, spec *specs.Spec, action CtAct, criuOp
 ```diff
 func createContainer(context *cli.Context, id string, spec *specs.Spec) (libcontainer.Container, error) {
 	rootlessCg, err := shouldUseRootlessCgroupManager(context)
-
 	config, err := specconv.CreateLibcontainerConfig(&specconv.CreateOpts{
 		CgroupName:       id,
 		UseSystemdCgroup: context.GlobalBool("systemd-cgroup"),
@@ -351,8 +350,6 @@ func loadFactory(context *cli.Context) (libcontainer.Factory, error) {
 	if context.GlobalBool("systemd-cgroup") {
 		cgroupManager = libcontainer.SystemdCgroups
 	}
-
-	intelRdtManager := libcontainer.IntelRdtFs
 
 	// We resolve the paths for {newuidmap,newgidmap} from the context of runc,
 	// to avoid doing a path lookup in the nsexec context. TODO: The binary
