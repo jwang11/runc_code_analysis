@@ -675,9 +675,7 @@ func (c *linuxContainer) newInitProcess(p *Process, cmd *exec.Cmd, messageSockPa
 	_, sharePidns := nsMaps[configs.NEWPID]
 -	// 利用nsMaps和CloneFlags生成bootstrapData，等待发送给runc init（0）进程
 	data, err := c.bootstrapData(c.config.Namespaces.CloneFlags(), nsMaps)
-	if err != nil {
-		return nil, err
-	}
+	
 -	// 构造initProcess，其实就是runc init		
 	init := &initProcess{
 		cmd:             cmd,
