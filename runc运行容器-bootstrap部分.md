@@ -479,20 +479,9 @@ type runner struct {
 }
 
 func (r *runner) run(config *specs.Process) (int, error) {
-	var err error
-	defer func() {
-		if err != nil {
-			r.destroy()
-		}
-	}()
-	if err = r.checkTerminal(config); err != nil {
-		return -1, err
-	}
+...
 +	// 根据OCI，创建在container里运行的process结构	
 	process, err := newProcess(*config, r.init, r.logLevel)
-	if err != nil {
-		return -1, err
-	}
 	if len(r.listenFDs) > 0 {
 		process.Env = append(process.Env, "LISTEN_FDS="+strconv.Itoa(len(r.listenFDs)), "LISTEN_PID=1")
 		process.ExtraFiles = append(process.ExtraFiles, r.listenFDs...)
@@ -500,29 +489,19 @@ func (r *runner) run(config *specs.Process) (int, error) {
 	baseFd := 3 + len(process.ExtraFiles)
 	for i := baseFd; i < baseFd+r.preserveFDs; i++ {
 		_, err = os.Stat("/proc/self/fd/" + strconv.Itoa(i))
-		if err != nil {
-			return -1, fmt.Errorf("unable to stat preserved-fd %d (of %d): %w", i-baseFd, r.preserveFDs, err)
-		}
 		process.ExtraFiles = append(process.ExtraFiles, os.NewFile(uintptr(i), "PreserveFD:"+strconv.Itoa(i)))
 	}
+-	// container里的root在host上的uid	
 	rootuid, err := r.container.Config().HostRootUID()
-	if err != nil {
-		return -1, err
-	}
 	rootgid, err := r.container.Config().HostRootGID()
-	if err != nil {
-		return -1, err
-	}
+
 	detach := r.detach || (r.action == CT_ACT_CREATE)
 	// Setting up IO is a two stage process. We need to modify process to deal
 	// with detaching containers, and then we get a tty after the container has
 	// started.
 	handler := newSignalHandler(r.enableSubreaper, r.notifySocket)
+-	// 根据传入的consoleSocket设置process.console	
 	tty, err := setupIO(process, rootuid, rootgid, config.Terminal, detach, r.consoleSocket)
-	if err != nil {
-		return -1, err
-	}
-	defer tty.Close()
 
 	switch r.action {
 -	// runc create走这条路
@@ -536,33 +515,8 @@ func (r *runner) run(config *specs.Process) (int, error) {
 	default:
 		panic("Unknown action")
 	}
-	if err != nil {
-		return -1, err
-	}
-	if err = tty.waitConsole(); err != nil {
-		r.terminate(process)
-		return -1, err
-	}
-	if err = tty.ClosePostStart(); err != nil {
-		r.terminate(process)
-		return -1, err
-	}
-	if r.pidFile != "" {
-		if err = createPidFile(r.pidFile, process); err != nil {
-			r.terminate(process)
-			return -1, err
-		}
-	}
+...
 	status, err := handler.forward(process, tty, detach)
-	if err != nil {
-		r.terminate(process)
-	}
-	if detach {
-		return 0, nil
-	}
-	if err == nil {
-		r.destroy()
-	}
 	return status, err
 }
 ```
