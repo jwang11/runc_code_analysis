@@ -270,10 +270,6 @@ command(s) that get executed on start, edit the args parameter of the spec. See
 ```diff
 func startContainer(context *cli.Context, spec *specs.Spec, action CtAct, criuOpts *libcontainer.CriuOpts) (int, error) {
 	id := context.Args().First()
-	if id == "" {
-		return -1, errEmptyID
-	}
-
 	notifySocket := newNotifySocket(context, os.Getenv("NOTIFY_SOCKET"), id)
 
 -	// 根据命令行以及软硬件环境，创建container对象，结构是在libcontainer里定义的。
