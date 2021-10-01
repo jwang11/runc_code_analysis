@@ -828,50 +828,8 @@ func (p *initProcess) start() (retErr error) {
 	// close the write-side of the pipes (controlled by child)
 	_ = p.messageSockPair.child.Close()
 	_ = p.logFilePair.child.Close()
-	if err != nil {
-		p.process.ops = nil
-		return fmt.Errorf("unable to start init: %w", err)
-	}
 
 	waitInit := initWaiter(p.messageSockPair.parent)
-	defer func() {
-		if retErr != nil {
-			// Find out if init is killed by the kernel's OOM killer.
-			// Get the count before killing init as otherwise cgroup
-			// might be removed by systemd.
-			oom, err := p.manager.OOMKillCount()
-			if err != nil {
-				logrus.WithError(err).Warn("unable to get oom kill count")
-			} else if oom > 0 {
-				// Does not matter what the particular error was,
-				// its cause is most probably OOM, so report that.
-				const oomError = "container init was OOM-killed (memory limit too low?)"
-
-				if logrus.GetLevel() >= logrus.DebugLevel {
-					// Only show the original error if debug is set,
-					// as it is not generally very useful.
-					retErr = fmt.Errorf(oomError+": %w", retErr)
-				} else {
-					retErr = errors.New(oomError)
-				}
-			}
-
-			werr := <-waitInit
-			if werr != nil {
-				logrus.WithError(werr).Warn()
-			}
-
-			// Terminate the process to ensure we can remove cgroups.
-			if err := ignoreTerminateErrors(p.terminate()); err != nil {
-				logrus.WithError(err).Warn("unable to terminate initProcess")
-			}
-
-			_ = p.manager.Destroy()
-			if p.intelRdtManager != nil {
-				_ = p.intelRdtManager.Destroy()
-			}
-		}
-	}()
 
 	// Do this before syncing with child so that no children can escape the
 	// cgroup. We don't need to worry about not doing this and not being root
@@ -879,33 +837,20 @@ func (p *initProcess) start() (retErr error) {
 	if err := p.manager.Apply(p.pid()); err != nil {
 		return fmt.Errorf("unable to apply cgroup configuration: %w", err)
 	}
-	if p.intelRdtManager != nil {
-		if err := p.intelRdtManager.Apply(p.pid()); err != nil {
-			return fmt.Errorf("unable to apply Intel RDT configuration: %w", err)
-		}
-	}
+
 -	// 写bootstrapData
 	if _, err := io.Copy(p.messageSockPair.parent, p.bootstrapData); err != nil {
 		return fmt.Errorf("can't copy bootstrap data to pipe: %w", err)
 	}
 	err = <-waitInit
-	if err != nil {
-		return err
-	}
 
 -	// 获取runc init(2)的PID
 	childPid, err := p.getChildPid()
-	if err != nil {
-		return fmt.Errorf("can't get final child's PID from pipe: %w", err)
-	}
 
 	// Save the standard descriptor names before the container process
 	// can potentially move them (e.g., via dup2()).  If we don't do this now,
 	// we won't know at checkpoint time which file descriptor to look up.
 	fds, err := getPipeFds(childPid)
-	if err != nil {
-		return fmt.Errorf("error getting pipe fds for pid %d: %w", childPid, err)
-	}
 	p.setExternalDescriptors(fds)
 
 +	// 等待runc init(0)退出
