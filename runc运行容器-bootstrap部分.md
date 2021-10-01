@@ -614,20 +614,15 @@ func (c *linuxContainer) newParentProcess(p *Process) (parentProcess, error) {
 -	// 创建一个unix sockpair(全双工): parentInitPipe留在当前进程， childInitPipe被子进程继承。
 -	// runc run和runc init父子进程的bootstrap等数据交换是通过它来完成。
 	parentInitPipe, childInitPipe, err := utils.NewSockPair("init")
-	if err != nil {
-		return nil, fmt.Errorf("unable to create init pipe: %w", err)
-	}
 +	messageSockPair := filePair{parentInitPipe, childInitPipe}
 
 -	// 创建匿名pipe(半双工)。父进程通过匿名pipe来接收子进程日志: 所以将write一端(childLogPipe)封装到cmd中，继承到子进程中。
 	parentLogPipe, childLogPipe, err := os.Pipe()
 	logFilePair := filePair{parentLogPipe, childLogPipe}
 
--	// 创建runc init子进程的命令行
+-	// 创建runc init子进程的命令行包括环境变量
 	cmd := c.commandTemplate(p, childInitPipe, childLogPipe)
-	if err := c.includeExecFifo(cmd); err != nil {
-		return nil, fmt.Errorf("unable to setup exec fifo: %w", err)
-	}
+	if err := c.includeExecFifo(cmd); err != nil ...
 +	return c.newInitProcess(p, cmd, messageSockPair, logFilePair)
 }
 ```
@@ -640,9 +635,7 @@ func (c *linuxContainer) commandTemplate(p *Process, childInitPipe *os.File, chi
 	cmd.Stdout = p.Stdout
 	cmd.Stderr = p.Stderr
 	cmd.Dir = c.config.Rootfs
-	if cmd.SysProcAttr == nil {
-		cmd.SysProcAttr = &unix.SysProcAttr{}
-	}
+
 -	// 通过cmd.Env向子进程设置环境变量
 	cmd.Env = append(cmd.Env, "GOMAXPROCS="+os.Getenv("GOMAXPROCS"))
 	cmd.ExtraFiles = append(cmd.ExtraFiles, p.ExtraFiles...)
@@ -662,14 +655,7 @@ func (c *linuxContainer) commandTemplate(p *Process, childInitPipe *os.File, chi
 	cmd.Env = append(cmd.Env,
 		"_LIBCONTAINER_LOGPIPE="+strconv.Itoa(stdioFdCount+len(cmd.ExtraFiles)-1),
 		"_LIBCONTAINER_LOGLEVEL="+p.LogLevel,
-	)
-
-	// NOTE: when running a container with no PID namespace and the parent process spawning the container is
-	// PID1 the pdeathsig is being delivered to the container's init process by the kernel for some reason
-	// even with the parent still running.
-	if c.config.ParentDeathSignal > 0 {
-		cmd.SysProcAttr.Pdeathsig = unix.Signal(c.config.ParentDeathSignal)
-	}
+	) ...
 	return cmd
 }
 
