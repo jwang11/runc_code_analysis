@@ -103,16 +103,16 @@ void nsexec(void)
 	 */
 	setup_logpipe();
 
-+	// initPipe检查有没有设置环境变量_LIBCONTAINER_INITPIPE，如果没有就直接退出了
+-	// initPipe检查有没有设置环境变量_LIBCONTAINER_INITPIPE，如果没有就直接退出了
 	/*
 	 * If we don't have an init pipe, just return to the go routine.
 	 * We'll only get an init pipe for start or exec.
 	 */
-+	pipenum = initpipe();
+	pipenum = initpipe();
 	if (pipenum == -1)
 		return;
 
-+	// 通过将runc重新挂载，载入到只读的内存当中，Fix CVE问题
+-	// 通过将runc重新挂载，载入到只读的内存当中，Fix CVE问题
 	/*
 	 * We need to re-exec if we are not in a cloned binary. This is necessary
 	 * to ensure that containers won't be able to access the host binary
@@ -121,7 +121,7 @@ void nsexec(void)
 	if (ensure_cloned_binary() < 0)
 		bail("could not ensure we are a cloned binary");
 
-+	// 通知run create端initWaiter，runc init上线，nsenter要开始工作了
+-	// 通知run create端initWaiter，runc init上线，nsenter要开始工作了
 	/*
 	 * Inform the parent we're past initial setup.
 	 * For the other side of this, see initWaiter.
@@ -131,11 +131,11 @@ void nsexec(void)
 
 	write_log(DEBUG, "=> nsexec container setup");
 	
-+	//调用nl_parse来获取bootstrap发送的namespace的配置信息。
-+	//在initProcess.start中bootstrap通过调用io.Copy(p.parentPipe, p.bootstrapData)往管道里写入了这些信息，
-+	//这边借用netlink payload实现(消息编解码格式)来在不同进程之间的传递多种消息。
+-	//调用nl_parse来获取bootstrap发送的namespace的配置信息。
+-	//在initProcess.start中bootstrap通过调用io.Copy(p.parentPipe, p.bootstrapData)往管道里写入了这些信息，
+-	//这边借用netlink payload实现(消息编解码格式)来在不同进程之间的传递多种消息。
 	/* Parse all of the netlink configuration. */
-+	nl_parse(pipenum, &config);
+	nl_parse(pipenum, &config);
 
 	/* Set oom_score_adj. This has to be done before !dumpable because
 	 * /proc/self/oom_score_adj is not writeable unless you're an privileged
@@ -161,12 +161,12 @@ void nsexec(void)
 			bail("failed to set process as non-dumpable");
 	}
 
-+	// 创建与child，也就是init_1通信的sockpair 
+-	// 创建与child，也就是init_1通信的sockpair 
 	/* Pipe so we can tell the child when we've finished setting up. */
 	if (socketpair(AF_LOCAL, SOCK_STREAM, 0, sync_child_pipe) < 0)
 		bail("failed to setup sync pipe between parent and child");
 
-+	// 创建与grandchild，也就是init_2通信的sockpair 
+-	// 创建与grandchild，也就是init_2通信的sockpair 
 	/*
 	 * We need a new socketpair to sync with grandchild so we don't have
 	 * race condition with child.
@@ -243,8 +243,8 @@ void nsexec(void)
 
 			/* Start the process of getting a container. */
 			write_log(DEBUG, "spawn stage-1");
-+			// clone如果设置了CLONE_PARENT，子进程的父进程(使用getppid(2)获取)和调用进程的父进程相同。
-+			stage1_pid = clone_parent(&env, STAGE_CHILD);
+-			// clone如果设置了CLONE_PARENT，子进程的父进程(使用getppid(2)获取)和调用进程的父进程相同。
+			stage1_pid = clone_parent(&env, STAGE_CHILD);
 			if (stage1_pid < 0)
 				bail("unable to spawn stage-1");
 
@@ -261,7 +261,7 @@ void nsexec(void)
 			while (!stage1_complete) {
 				enum sync_t s;
 
-+				// 监听child的通道，处理相应的请求，如SYNC_USERMAP_PLS，SYNC_RECVPID_PLS等
+-				// 监听child的通道，处理相应的请求，如SYNC_USERMAP_PLS，SYNC_RECVPID_PLS等
 				if (read(syncfd, &s, sizeof(s)) != sizeof(s))
 					bail("failed to sync with stage-1: next state");
 
@@ -296,7 +296,7 @@ void nsexec(void)
 				case SYNC_RECVPID_PLS:
 					write_log(DEBUG, "stage-1 requested pid to be forwarded");
 
-+					// 得到init_2的pid，也就是grand child
+-					// 得到init_2的pid，也就是grand child
 					/* Get the stage-2 pid. */
 					if (read(syncfd, &stage2_pid, sizeof(stage2_pid)) != sizeof(stage2_pid)) {
 						sane_kill(stage1_pid, SIGKILL);
@@ -312,7 +312,7 @@ void nsexec(void)
 						bail("failed to sync with stage-1: write(SYNC_RECVPID_ACK)");
 					}
 
-+					// 把init_1和init_2的PID都发给runc_create
+-					// 把init_1和init_2的PID都发给runc_create
 					/*
 					 * Send both the stage-1 and stage-2 pids back to runc.
 					 * runc needs the stage-2 to continue process management,
@@ -346,7 +346,7 @@ void nsexec(void)
 			if (close(sync_grandchild_pipe[0]) < 0)
 				bail("failed to close sync_grandchild_pipe[0] fd");
 
-+			// 和init_2保持sync，直到init_2完成所有任务
+-			// 和init_2保持sync，直到init_2完成所有任务
 			write_log(DEBUG, "-> stage-2 synchronisation loop");
 			stage2_complete = false;
 			while (!stage2_complete) {
@@ -373,8 +373,8 @@ void nsexec(void)
 			}
 			write_log(DEBUG, "<- stage-2 synchronisation loop");
 			write_log(DEBUG, "<~ nsexec stage-0");
-+			// init的3进程中第2个领盒饭的。			
-+			exit(0);
+-			// init的3进程中第2个领盒饭的。			
+			exit(0);
 		}
 		break;
 
@@ -400,7 +400,7 @@ void nsexec(void)
 			prctl(PR_SET_NAME, (unsigned long)"runc:[1:CHILD]", 0, 0, 0);
 			write_log(DEBUG, "~> nsexec stage-1");
 
-+			// 如果config.json中namespace配置了path，则这里需要将其加入到path指定的namesapce中。k8s的多容器的pod会调用到此处
+-			// 如果config.json中namespace配置了path，则这里需要将其加入到path指定的namesapce中。k8s的多容器的pod会调用到此处
 			/*
 			 * We need to setns first. We cannot do this earlier (in stage 0)
 			 * because of the fact that we forked to get here (the PID of
@@ -408,9 +408,9 @@ void nsexec(void)
 			 * using cmsg(3) but that's just annoying.
 			 */
 			if (config.namespaces)
-+				join_namespaces(config.namespaces);
+				join_namespaces(config.namespaces);
 
-+			// 如果config.json中设置了user，则创建user namespace
+-			// 如果config.json中设置了user，则创建user namespace
 			/*
 			 * Deal with user namespaces first. They are quite special, as they
 			 * affect our ability to unshare other namespaces and are used as
@@ -498,9 +498,9 @@ void nsexec(void)
 			 * which would break many applications and libraries, so we must fork
 			 * to actually enter the new PID namespace.
 			 */
-+			// 创建grand child，也就是init_2
+-			// 创建grand child，也就是init_2
 			write_log(DEBUG, "spawn stage-2");
-+			stage2_pid = clone_parent(&env, STAGE_INIT);
+			stage2_pid = clone_parent(&env, STAGE_INIT);
 			if (stage2_pid < 0)
 				bail("unable to spawn stage-2");
 
@@ -536,7 +536,7 @@ void nsexec(void)
 			/* Our work is done. [Stage 2: STAGE_INIT] is doing the rest of the work. */
 			write_log(DEBUG, "<~ nsexec stage-1");
 +			// init_1是nsenter的3个进程中第1个领盒饭的
-+			exit(0);
+			exit(0);
 		}
 		break;
 
@@ -583,7 +583,7 @@ void nsexec(void)
 				if (setgroups(0, NULL) < 0)
 					bail("setgroups failed");
 			}
-+			// 设置CGroup namespace，从pipe中读取一个字节值为0x80
+-			// 设置CGroup namespace，从pipe中读取一个字节值为0x80
 			if (config.cloneflags & CLONE_NEWCGROUP) {
 				if (unshare(CLONE_NEWCGROUP) < 0)
 					bail("failed to unshare cgroup namespace");
@@ -600,7 +600,7 @@ void nsexec(void)
 
 			/* Free netlink data. */
 			nl_free(&config);
-+			// 接下来又重新被go的部分接管
+-			// 接下来又重新被go的部分接管
 			/* Finish executing, let the Go runtime take over. */
 			write_log(DEBUG, "<= nsexec container setup");
 			write_log(DEBUG, "booting up go runtime ...");
