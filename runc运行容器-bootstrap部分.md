@@ -275,17 +275,11 @@ func startContainer(context *cli.Context, spec *specs.Spec, action CtAct, criuOp
 	}
 
 	notifySocket := newNotifySocket(context, os.Getenv("NOTIFY_SOCKET"), id)
-	if notifySocket != nil {
-		if err := notifySocket.setupSpec(context, spec); err != nil {
-			return -1, err
-		}
-	}
-+	// 根据命令行以及软硬件环境，创建container对象，结构是在libcontainer里定义的。
-+	container, err := createContainer(context, id, spec)
-	if err != nil {
-		return -1, err
-	}
 
+-	// 根据命令行以及软硬件环境，创建container对象，结构是在libcontainer里定义的。
+	container, err := createContainer(context, id, spec)
+
+-	// 给Systemd 设置notifySocket
 	if notifySocket != nil {
 		if err := notifySocket.setupSocketDirectory(); err != nil {
 			return -1, err
@@ -297,6 +291,7 @@ func startContainer(context *cli.Context, spec *specs.Spec, action CtAct, criuOp
 		}
 	}
 
+-	// 给systemd设置socket激活
 	// Support on-demand socket activation by passing file descriptors into the container init process.
 	listenFDs := []*os.File{}
 	if os.Getenv("LISTEN_FDS") != "" {
@@ -307,9 +302,9 @@ func startContainer(context *cli.Context, spec *specs.Spec, action CtAct, criuOp
 	if context.GlobalBool("debug") {
 		logLevel = "debug"
 	}
-+	// 构造runner，包含了前面生成的container和运行需要的配置信息。
-+	// 注意，这里init=true，而如果runc exec时候，init=false
-+	r := &runner{
+-	// 构造runner，包含了前面生成的container和运行需要的配置信息。
+-	// 注意，这里init=true，而如果runc exec时候，init=false
+	r := &runner{
 		enableSubreaper: !context.Bool("no-subreaper"),
 		shouldDestroy:   true,
 		container:       container,
