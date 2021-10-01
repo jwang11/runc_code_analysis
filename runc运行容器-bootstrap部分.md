@@ -323,9 +323,7 @@ func startContainer(context *cli.Context, spec *specs.Spec, action CtAct, criuOp
 ```diff
 func createContainer(context *cli.Context, id string, spec *specs.Spec) (libcontainer.Container, error) {
 	rootlessCg, err := shouldUseRootlessCgroupManager(context)
-	if err != nil {
-		return nil, err
-	}
+
 	config, err := specconv.CreateLibcontainerConfig(&specconv.CreateOpts{
 		CgroupName:       id,
 		UseSystemdCgroup: context.GlobalBool("systemd-cgroup"),
@@ -335,14 +333,9 @@ func createContainer(context *cli.Context, id string, spec *specs.Spec) (libcont
 		RootlessEUID:     os.Geteuid() != 0,
 		RootlessCgroups:  rootlessCg,
 	})
-	if err != nil {
-		return nil, err
-	}
 
 +	factory, err := loadFactory(context)
-	if err != nil {
-		return nil, err
-	}
+
 +	return factory.Create(id, config)
 }
 ```
@@ -352,28 +345,15 @@ func createContainer(context *cli.Context, id string, spec *specs.Spec) (libcont
 func loadFactory(context *cli.Context) (libcontainer.Factory, error) {
 	root := context.GlobalString("root")
 	abs, err := filepath.Abs(root)
-	if err != nil {
-		return nil, err
-	}
 
 	// We default to cgroupfs, and can only use systemd if the system is a
 	// systemd box.
 	cgroupManager := libcontainer.Cgroupfs
-	rootlessCg, err := shouldUseRootlessCgroupManager(context)
-	if err != nil {
-		return nil, err
-	}
-	if rootlessCg {
-		cgroupManager = libcontainer.RootlessCgroupfs
-	}
 	if context.GlobalBool("systemd-cgroup") {
 		if !systemd.IsRunningSystemd() {
 			return nil, errors.New("systemd cgroup flag passed, but systemd support for managing cgroups is not available")
 		}
 		cgroupManager = libcontainer.SystemdCgroups
-		if rootlessCg {
-			cgroupManager = libcontainer.RootlessSystemdCgroups
-		}
 	}
 
 	intelRdtManager := libcontainer.IntelRdtFs
@@ -382,13 +362,7 @@ func loadFactory(context *cli.Context) (libcontainer.Factory, error) {
 	// to avoid doing a path lookup in the nsexec context. TODO: The binary
 	// names are not currently configurable.
 	newuidmap, err := exec.LookPath("newuidmap")
-	if err != nil {
-		newuidmap = ""
-	}
 	newgidmap, err := exec.LookPath("newgidmap")
-	if err != nil {
-		newgidmap = ""
-	}
 
 	return libcontainer.New(abs, cgroupManager, intelRdtManager,
 		libcontainer.CriuPath(context.GlobalString("criu")),
