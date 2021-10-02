@@ -614,7 +614,7 @@ func (c *linuxContainer) newParentProcess(p *Process) (parentProcess, error) {
 -	// 创建一个unix sockpair(全双工): parentInitPipe留在当前进程， childInitPipe被子进程继承。
 -	// runc run和runc init父子进程的bootstrap等数据交换是通过它来完成。
 	parentInitPipe, childInitPipe, err := utils.NewSockPair("init")
-+	messageSockPair := filePair{parentInitPipe, childInitPipe}
+	messageSockPair := filePair{parentInitPipe, childInitPipe}
 
 -	// 创建匿名pipe(半双工)。父进程通过匿名pipe来接收子进程日志: 所以将write一端(childLogPipe)封装到cmd中，继承到子进程中。
 	parentLogPipe, childLogPipe, err := os.Pipe()
@@ -622,6 +622,9 @@ func (c *linuxContainer) newParentProcess(p *Process) (parentProcess, error) {
 
 -	// 创建runc init子进程的命令行包括环境变量
 	cmd := c.commandTemplate(p, childInitPipe, childLogPipe)
+	if !p.Init {
+		return c.newSetnsProcess(p, cmd, messageSockPair, logFilePair)
+	}
 	if err := c.includeExecFifo(cmd); err != nil ...
 +	return c.newInitProcess(p, cmd, messageSockPair, logFilePair)
 }
