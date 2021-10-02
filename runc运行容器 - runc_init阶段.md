@@ -728,7 +728,7 @@ func init() {
 - init -> factory.StartInitialization
 ```diff
 func (l *LinuxFactory) StartInitialization() (err error) {
-+	// 获取init的管道，用来和bootstrap那边通话	
+-	// 获取init的管道，用来和bootstrap那边通话	
 	// Get the INITPIPE.
 	envInitPipe := os.Getenv("_LIBCONTAINER_INITPIPE")
 	pipefd, err := strconv.Atoi(envInitPipe)
@@ -738,6 +738,7 @@ func (l *LinuxFactory) StartInitialization() (err error) {
 	pipe := os.NewFile(uintptr(pipefd), "pipe")
 	defer pipe.Close()
 
+-	// 获取INITTYPE，如果是initStandard，应该有fifofd控制start
 	// Only init processes have FIFOFD.
 	fifofd := -1
 	envInitType := os.Getenv("_LIBCONTAINER_INITTYPE")
@@ -749,6 +750,7 @@ func (l *LinuxFactory) StartInitialization() (err error) {
 		}
 	}
 
+-	// 得到console socket
 	var consoleSocket *os.File
 	if envConsole := os.Getenv("_LIBCONTAINER_CONSOLE"); envConsole != "" {
 		console, err := strconv.Atoi(envConsole)
@@ -878,11 +880,11 @@ func (l *linuxStandardInit) Init() error {
 		}
 	}
 
-+	// setup网络，调用第三方 netlink.LinkSetup
-+	if err := setupNetwork(l.config); err != nil {
+-	// setup网络，调用第三方 netlink.LinkSetup
+	if err := setupNetwork(l.config); err != nil {
 		return err
 	}
-+	// setup静态路由，调用第三方 netlink.RouteAdd
+-	// setup静态路由，调用第三方 netlink.RouteAdd
 +	if err := setupRoute(l.config.Config); err != nil {
 		return err
 	}
@@ -904,7 +906,7 @@ func (l *linuxStandardInit) Init() error {
 		}
 	}
 
-+	// rootfs设置
+-	// rootfs设置
 	// Finish the rootfs setup.
 	if l.config.Config.Namespaces.Contains(configs.NEWNS) {
 		if err := finalizeRootfs(l.config.Config); err != nil {
@@ -912,11 +914,13 @@ func (l *linuxStandardInit) Init() error {
 		}
 	}
 
+-	// hostname 设置
 	if hostname := l.config.Config.Hostname; hostname != "" {
 		if err := unix.Sethostname([]byte(hostname)); err != nil {
 			return &os.SyscallError{Syscall: "sethostname", Err: err}
 		}
 	}
+-	// 加载apparmor profile	
 	if err := apparmor.ApplyProfile(l.config.AppArmorProfile); err != nil {
 		return fmt.Errorf("unable to apply apparmor profile: %w", err)
 	}
@@ -945,7 +949,7 @@ func (l *linuxStandardInit) Init() error {
 			return &os.SyscallError{Syscall: "prctl(SET_NO_NEW_PRIVS)", Err: err}
 		}
 	}
-+	// 容器创建以及完毕，通知Parent准备执行命令
+-	// 容器创建以及完毕，通知Parent准备执行命令
 	// Tell our parent that we're ready to Execv. This must be done before the
 	// Seccomp rules have been applied, because we need to be able to read and
 	// write to a socket.
@@ -964,7 +968,7 @@ func (l *linuxStandardInit) Init() error {
 			return err
 		}
 	}
-+	// 根据config配置将需要的特权capabilities加入白名单，设置user namespace，关闭不需要的文件描述符。	
+-	// 根据config配置将需要的特权capabilities加入白名单，设置user namespace，关闭不需要的文件描述符。	
 	if err := finalizeNamespace(l.config); err != nil {
 		return err
 	}
@@ -995,7 +999,7 @@ func (l *linuxStandardInit) Init() error {
 		return &os.PathError{Op: "close log pipe", Path: "fd " + strconv.Itoa(l.logFd), Err: err}
 	}
 
-+	// 只写方式打开fifo管道并写入0，会一直保持阻塞，直到管道的另一端以读方式打开，并读取内容，如runc start
+-	// 只写方式打开fifo管道并写入0，会一直保持阻塞，直到管道的另一端以读方式打开，并读取内容，如runc start
 	// Wait for the FIFO to be opened on the other side before exec-ing the
 	// user process. We open it through /proc/self/fd/$fd, because the fd that
 	// was given to us was an O_PATH fd to the fifo itself. Linux allows us to
@@ -1030,7 +1034,7 @@ func (l *linuxStandardInit) Init() error {
 	if err := l.config.Config.Hooks[configs.StartContainer].RunHooks(s); err != nil {
 		return err
 	}
-+	// 执行用户所指定的在容器中运行的程序
+-	// 执行用户所指定的在容器中运行的程序
 	if err := system.Exec(name, l.config.Args[0:], os.Environ()); err != nil {
 		return fmt.Errorf("can't exec user process: %w", err)
 	}
