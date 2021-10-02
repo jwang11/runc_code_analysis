@@ -374,11 +374,8 @@ void nsexec(void)
 			if (close(sync_child_pipe[1]) < 0)
 				bail("failed to close sync_child_pipe[1] fd");
 
-			/* For debugging. */
-			prctl(PR_SET_NAME, (unsigned long)"runc:[1:CHILD]", 0, 0, 0);
-			write_log(DEBUG, "~> nsexec stage-1");
-
--			// 如果config.json中namespace配置了path，则这里需要将其加入到path指定的namesapce中。k8s的多容器的pod会调用到此处
+-			// 如果config.json中namespace配置了path，则这里需要将其加入到path指定的namesapce中。
+-			// k8s的多容器的pod会调用到此处
 			/*
 			 * We need to setns first. We cannot do this earlier (in stage 0)
 			 * because of the fact that we forked to get here (the PID of
