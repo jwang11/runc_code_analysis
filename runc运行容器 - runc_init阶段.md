@@ -732,9 +732,7 @@ func (l *LinuxFactory) StartInitialization() (err error) {
 	// Get the INITPIPE.
 	envInitPipe := os.Getenv("_LIBCONTAINER_INITPIPE")
 	pipefd, err := strconv.Atoi(envInitPipe)
-	if err != nil {
-		return fmt.Errorf("unable to convert _LIBCONTAINER_INITPIPE: %w", err)
-	}
+
 	pipe := os.NewFile(uintptr(pipefd), "pipe")
 	defer pipe.Close()
 
@@ -761,38 +759,7 @@ func (l *LinuxFactory) StartInitialization() (err error) {
 		defer consoleSocket.Close()
 	}
 
-	logPipeFdStr := os.Getenv("_LIBCONTAINER_LOGPIPE")
-	logPipeFd, err := strconv.Atoi(logPipeFdStr)
-	if err != nil {
-		return fmt.Errorf("unable to convert _LIBCONTAINER_LOGPIPE: %w", err)
-	}
-
-	// clear the current process's environment to clean any libcontainer
-	// specific env vars.
-	os.Clearenv()
-
-	defer func() {
-		// We have an error during the initialization of the container's init,
-		// send it back to the parent process in the form of an initError.
-		if werr := utils.WriteJSON(pipe, syncT{procError}); werr != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return
-		}
-		if werr := utils.WriteJSON(pipe, &initError{Message: err.Error()}); werr != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return
-		}
-	}()
-	defer func() {
-		if e := recover(); e != nil {
-			err = fmt.Errorf("panic from initialization: %w, %v", e, string(debug.Stack()))
-		}
-	}()
-
 +	i, err := newContainerInit(it, pipe, consoleSocket, fifofd, logPipeFd)
-	if err != nil {
-		return err
-	}
 
 	// If Init succeeds, syscall.Exec will not return, hence none of the defers will be called.
 +	return i.Init()
@@ -885,7 +852,7 @@ func (l *linuxStandardInit) Init() error {
 		return err
 	}
 -	// setup静态路由，调用第三方 netlink.RouteAdd
-+	if err := setupRoute(l.config.Config); err != nil {
+	if err := setupRoute(l.config.Config); err != nil {
 		return err
 	}
 
