@@ -1,11 +1,10 @@
 # runc 运行容器
 runc运行container的实现分为两个大阶段:
->> 第一个阶段叫bootstrap, 由命令`runc run/create`发起，设置一些环境以及配置信息, 创建匿名管道，把容器的配置信息通过管道发送给第二阶段。
->> 
->> 第二个阶段叫init，由第一阶段fork的子进程`runc init`, 主要就是创建子进程并根据管道传过来的配置信息，设置进程的namespace。
+> 第一个阶段叫bootstrap, 由命令`runc run/create`发起，设置一些环境以及配置信息, 创建匿名管道，把容器的配置信息通过管道发送给第二阶段。<br>
+> 第二个阶段叫init，由第一阶段fork的子进程`runc init`, 主要就是创建子进程并根据管道传过来的配置信息，设置进程的namespace。
 
 ![工作流程图](runc_nsenter_timeline.png) 
-### [代码入口](https://github.com/opencontainers/runc/blob/master/run.go)
+## 1. [代码入口](https://github.com/opencontainers/runc/blob/master/run.go)
 ```diff
 // default action is to start a container
 var runCommand = cli.Command{
@@ -59,26 +58,19 @@ command(s) that get executed on start, edit the args parameter of the spec. See
 			Usage: "Pass N additional file descriptors to the container (stdio + $LISTEN_FDS + N in total)",
 		},
 	},
+	
 	Action: func(context *cli.Context) error {
 		if err := checkArgs(context, 1, exactArgs); err != nil {
 			return err
 		}
-		if err := revisePidFile(context); err != nil {
-			return err
-		}
--		// 解析bundle目录下的config.json配置。
-		spec, err := setupSpec(context)
-		if err != nil {
-			return err
-		}
--		// runc run的主函数，action flag=CT_ACT_RUN，如果是runc create，action=CT_ACT_CREATE
-		status, err := startContainer(context, spec, CT_ACT_RUN, nil)
+-		// runc run的主函数，action flag=CT_ACT_RUN，如果是runc create，action=CT_ACT_CREATE		
+		status, err := startContainer(context, CT_ACT_RUN, nil)
 		if err == nil {
 			// exit with the container's exit status so any external supervisor is
 			// notified of the exit with the correct exit status.
 			os.Exit(status)
 		}
-		return err
+		return fmt.Errorf("runc run failed: %w", err)
 	},
 }
 ```
@@ -266,9 +258,13 @@ command(s) that get executed on start, edit the args parameter of the spec. See
 }
 ```
 
-- [startContainer]（https://github.com/opencontainers/runc/blob/master/utils_linux.go#L400） 
+## 2. [startContainer]（https://github.com/opencontainers/runc/blob/master/utils_linux.go#L400） 
 ```diff
 func startContainer(context *cli.Context, spec *specs.Spec, action CtAct, criuOpts *libcontainer.CriuOpts) (int, error) {
+	revisePidFile(context)
+-	// 解析bundle目录下的config.json配置。	
+	spec, err := setupSpec(context)
+
 	id := context.Args().First()
 	notifySocket := newNotifySocket(context, os.Getenv("NOTIFY_SOCKET"), id)
 
@@ -277,13 +273,9 @@ func startContainer(context *cli.Context, spec *specs.Spec, action CtAct, criuOp
 
 -	// 给Systemd 设置notifySocket
 	if notifySocket != nil {
-		if err := notifySocket.setupSocketDirectory(); err != nil {
-			return -1, err
-		}
+		notifySocket.setupSocketDirectory()
 		if action == CT_ACT_RUN {
-			if err := notifySocket.bindSocket(); err != nil {
-				return -1, err
-			}
+			notifySocket.bindSocket()
 		}
 	}
 
@@ -316,6 +308,16 @@ func startContainer(context *cli.Context, spec *specs.Spec, action CtAct, criuOp
 		logLevel:        logLevel,
 	}
 +	return r.run(spec.Process)
+}
+
+// setupSpec performs initial setup based on the cli.Context for the container
+func setupSpec(context *cli.Context) (*specs.Spec, error) {
+	bundle := context.String("bundle")
+	if bundle != "" {
+		os.Chdir(bundle)
+	}
++	spec, err := loadSpec(specConfig)
+	return spec, nil
 }
 ```
 
@@ -370,9 +372,7 @@ func loadFactory(context *cli.Context) (libcontainer.Factory, error) {
 // configures the factory with the provided option funcs.
 func New(root string, options ...func(*LinuxFactory) error) (Factory, error) {
 	if root != "" {
-		if err := os.MkdirAll(root, 0o700); err != nil {
-			return nil, err
-		}
+		os.MkdirAll(root, 0o700)
 	}
 	l := &LinuxFactory{
 		Root:      root,
