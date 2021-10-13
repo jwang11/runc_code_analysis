@@ -258,7 +258,7 @@ command(s) that get executed on start, edit the args parameter of the spec. See
 }
 ```
 
-## 2. [startContainer]（https://github.com/opencontainers/runc/blob/master/utils_linux.go#L400） 
+## 2. [startContainer](https://github.com/opencontainers/runc/blob/master/utils_linux.go#L400)
 ```diff
 func startContainer(context *cli.Context, spec *specs.Spec, action CtAct, criuOpts *libcontainer.CriuOpts) (int, error) {
 	revisePidFile(context)
